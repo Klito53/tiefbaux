@@ -1,0 +1,11 @@
+# Cursor / IDE
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / Secrets (nie committen!)
+.env
+.env.local
+*.env
