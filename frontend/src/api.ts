@@ -1,0 +1,135 @@
+import type { ExportPreviewResponse, LVPosition, ParseResponse, PositionSuggestions, SuggestionResponse } from './types'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
+
+export class ApiError extends Error {
+  type: 'network' | 'api' | 'validation' | 'timeout'
+  status?: number
+
+  constructor(
+    message: string,
+    type: 'network' | 'api' | 'validation' | 'timeout',
+    status?: number,
+  ) {
+    super(message)
+    this.type = type
+    this.status = status
+  }
+}
+
+async function handleResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const body = await response.json()
+      detail = body.detail ?? JSON.stringify(body)
+    } catch {
+      detail = await response.text()
+    }
+    if (response.status === 400 || response.status === 422) {
+      throw new ApiError(detail || 'Ungültige Eingabedaten', 'validation', response.status)
+    }
+    throw new ApiError(
+      detail || `Serverfehler (${response.status})`,
+      'api',
+      response.status,
+    )
+  }
+  return (await response.json()) as T
+}
+
+function wrapFetch(promise: Promise<Response>): Promise<Response> {
+  return promise.catch((err) => {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw err
+    }
+    throw new ApiError('Server nicht erreichbar. Bitte prüfen Sie die Verbindung.', 'network')
+  })
+}
+
+export async function parseLV(file: File, signal?: AbortSignal): Promise<ParseResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/parse-lv`, { method: 'POST', body: formData, signal }),
+  )
+  return handleResponse<ParseResponse>(response)
+}
+
+export async function fetchSuggestions(positions: LVPosition[], signal?: AbortSignal): Promise<SuggestionResponse> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/suggestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ positions }),
+      signal,
+    }),
+  )
+  return handleResponse<SuggestionResponse>(response)
+}
+
+export async function fetchSingleSuggestions(position: LVPosition): Promise<PositionSuggestions> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/suggestions/single`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(position),
+    }),
+  )
+  return handleResponse<PositionSuggestions>(response)
+}
+
+export async function fetchExportPreview(
+  positions: LVPosition[],
+  selectedArticleIds: Record<string, string>,
+  customerName: string,
+  projectName: string,
+): Promise<ExportPreviewResponse> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/export-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        positions,
+        selected_article_ids: selectedArticleIds,
+        customer_name: customerName,
+        project_name: projectName,
+      }),
+    }),
+  )
+  return handleResponse<ExportPreviewResponse>(response)
+}
+
+export async function exportOffer(
+  positions: LVPosition[],
+  selectedArticleIds: Record<string, string>,
+  customerName: string,
+  projectName: string,
+): Promise<Blob> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/export-offer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        positions,
+        selected_article_ids: selectedArticleIds,
+        customer_name: customerName,
+        project_name: projectName,
+      }),
+    }),
+  )
+
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const body = await response.json()
+      detail = body.detail ?? ''
+    } catch {
+      detail = await response.text()
+    }
+    throw new ApiError(detail || 'Export fehlgeschlagen', 'api', response.status)
+  }
+
+  return await response.blob()
+}

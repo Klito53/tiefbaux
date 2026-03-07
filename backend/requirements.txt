@@ -1,4 +1,11 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pypdf==3.17.0
-
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.13
+python-multipart==0.0.17
+pdfplumber==0.11.4
+pypdf==5.1.0
+reportlab==4.2.5
+httpx==0.28.1
+python-dotenv==1.0.1
+eval-type-backport==0.2.2

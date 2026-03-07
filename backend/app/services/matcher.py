@@ -1,0 +1,484 @@
+from __future__ import annotations
+
+import math
+import re
+from collections import Counter
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..models import Product
+from ..schemas import LVPosition, ProductSuggestion, ScoreBreakdown
+
+LOAD_RANK = {
+    "A15": 1,
+    "B125": 2,
+    "C250": 3,
+    "D400": 4,
+    "E600": 5,
+    "F900": 6,
+}
+
+# DN equivalences: in practice DN100 = DN110 (OD 110mm), DN150 = DN160 (OD 160mm)
+DN_EQUIVALENTS: dict[int, set[int]] = {
+    100: {110},
+    110: {100},
+    150: {160},
+    160: {150},
+}
+
+# Product type keywords for subcategory matching
+PRODUCT_TYPE_KEYWORDS: dict[str, list[str]] = {
+    "rohr": ["rohr", "leitung", "kanalleitung", "entwässerungskanalleitung"],
+    "bogen": ["bogen", "bögen", "krümmer"],
+    "abzweig": ["abzweig", "abzweige", "t-stück"],
+    "muffe": ["muffe", "doppelmuffe", "überschiebmuffe"],
+    "reduzierstück": ["reduzierstück", "reduktion", "übergang"],
+    "schachtboden": ["schachtboden", "schachtunterteil"],
+    "schachtrohr": ["schachtrohr"],
+    "konus": ["konus", "schachthals", "schachtkonus"],
+    "abdeckung": ["abdeckung", "deckel", "abdeckplatte"],
+    "ablauf": ["ablauf", "straßenablauf", "hofablauf", "einlauf"],
+    "auslauf": ["auslauf", "auslaufstück", "froschklappe"],
+}
+
+SERVICE_HINTS = (
+    "abbruch",
+    "entsorgung",
+    "demont",
+    "stundenlohn",
+    "vorhaltung",
+    "baustellen",
+    "sperrung",
+    "rueckbau",
+    "rückbau",
+    "abbauen",
+    "transport",
+    "verdichten",
+    "einmessen",
+)
+
+# Keywords that indicate the position is NOT a product from our catalog.
+# Used to reject LLM mis-classifications (e.g. "Asphalt" → "Straßenentwässerung").
+NON_PRODUCT_HINTS = (
+    "asphalt",
+    "bitumen",
+    "beton einbau",
+    "estrich",
+    "pflaster",
+    "bordstein",
+    "fugenmörtel",
+    "kabeltrassenband",
+)
+
+
+_UMLAUT_MAP = str.maketrans({
+    "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+    "Ä": "ae", "Ö": "oe", "Ü": "ue",
+})
+
+
+def _normalize(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip().lower().translate(_UMLAUT_MAP)
+
+
+def _guess_category(position: LVPosition) -> tuple[str | None, str | None]:
+    params = position.parameters
+    if params.product_category:
+        return params.product_category, params.product_subcategory
+
+    text = f"{position.description} {position.raw_text}".lower()
+
+    if re.search(r"\brohr\b", text) and re.search(r"\bdn\s*\d", text):
+        return "Kanalrohre", "KG-Rohre"
+    if re.search(r"\bkg\b", text) and re.search(r"\bdn\b", text):
+        return "Kanalrohre", "KG-Rohre"
+    if re.search(r"\bschacht\b", text) and re.search(r"\babdeckung\b", text):
+        return "Schachtabdeckungen", None
+    if re.search(r"\bschachtunterteil\b", text):
+        return "Schachtbauteile", "Schachtunterteil"
+    if re.search(r"\bschachtring\b", text):
+        return "Schachtbauteile", "Schachtring"
+    if re.search(r"\bkonus\b|\bschachthals\b", text):
+        return "Schachtbauteile", "Schachthals/Konus"
+    if re.search(r"\bschacht\b", text):
+        return "Schachtbauteile", None
+    if re.search(r"\bstraßenablauf\b|\bstrassenablauf\b", text):
+        return "Straßenentwässerung", "Straßenablauf"
+    if re.search(r"\brinne\b", text):
+        return "Rinnen", None
+    if re.search(r"\bbogen\b|\babzweig\b|\bmuffe\b", text):
+        return "Formstücke", None
+    if re.search(r"\bdichtung\b", text):
+        return "Dichtungen & Zubehör", None
+    return None, None
+
+
+def _extract_tokens(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-zA-Z0-9äöüÄÖÜß-]{3,}", text.lower()))
+    stop_words = {
+        "und", "oder", "mit", "ohne", "der", "die", "das",
+        "ein", "eine", "für", "von", "auf", "inkl", "einschl",
+        "nach", "gem", "bzw", "bis", "aus",
+    }
+    return {token for token in tokens if token not in stop_words}
+
+
+def _detect_product_type(text: str) -> str | None:
+    """Detect what type of product is described (rohr, bogen, abzweig, etc.).
+
+    Uses a priority system: specific types (bogen, abzweig, muffe, konus, ...)
+    are checked first.  Generic "rohr" is only returned when no more specific
+    type matches.  This prevents "Formteil (Bögen) zu KG-Rohr DN200" from
+    being classified as "rohr".
+    """
+    lower = text.lower()
+
+    # High-priority: check specific product types first
+    priority_types = [
+        "bogen", "abzweig", "muffe", "reduzierstück", "konus",
+        "schachtboden", "schachtrohr", "abdeckung", "ablauf", "auslauf",
+    ]
+    for ptype in priority_types:
+        for kw in PRODUCT_TYPE_KEYWORDS[ptype]:
+            if kw in lower:
+                return ptype
+
+    # Low-priority: generic "rohr"
+    for kw in PRODUCT_TYPE_KEYWORDS["rohr"]:
+        if kw in lower:
+            return "rohr"
+
+    return None
+
+
+def _product_type_score(position_type: str | None, product: Product) -> tuple[float, list[str]]:
+    """Score how well the product type matches what the LV position describes."""
+    if not position_type:
+        return 0.0, []
+
+    product_text = f"{product.artikelname} {product.artikelbeschreibung or ''} {product.unterkategorie or ''}"
+    product_type = _detect_product_type(product_text)
+
+    if not product_type:
+        return 0.0, []
+
+    if position_type == product_type:
+        return 15.0, [f"Produkttyp passt ({position_type})"]
+
+    # Some types are closely related
+    related = {
+        ("rohr", "muffe"): -5.0,
+        ("bogen", "abzweig"): -5.0,
+        ("schachtboden", "schachtrohr"): 0.0,
+        ("schachtrohr", "konus"): 0.0,
+    }
+    pair = (position_type, product_type)
+    reverse_pair = (product_type, position_type)
+    if pair in related:
+        return related[pair], [f"Produkttyp ähnlich ({product_type})"]
+    if reverse_pair in related:
+        return related[reverse_pair], [f"Produkttyp ähnlich ({product_type})"]
+
+    # Clear mismatch: LV says "Rohr" but product is "Abzweig" etc.
+    return -20.0, [f"Produkttyp falsch ({position_type} ≠ {product_type})"]
+
+
+def _parse_compatible_dns(value: str | None) -> set[int]:
+    if not value:
+        return set()
+    dns: set[int] = set()
+    for piece in value.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if piece.isdigit():
+            dns.add(int(piece))
+    return dns
+
+
+def _price_for_quantity(product: Product, quantity: float) -> float | None:
+    if product.vk_listenpreis_netto is None:
+        return None
+
+    if quantity >= 100 and product.staffelpreis_ab_100 is not None:
+        return product.staffelpreis_ab_100
+    if quantity >= 50 and product.staffelpreis_ab_50 is not None:
+        return product.staffelpreis_ab_50
+    if quantity >= 10 and product.staffelpreis_ab_10 is not None:
+        return product.staffelpreis_ab_10
+    return product.vk_listenpreis_netto
+
+
+def _text_similarity_score(position_tokens: set[str], product: Product) -> float:
+    product_text = f"{product.artikelname} {product.artikelbeschreibung or ''} {product.unterkategorie or ''}"
+    product_tokens = _extract_tokens(product_text)
+    if not position_tokens or not product_tokens:
+        return 0.0
+    overlap = position_tokens.intersection(product_tokens)
+    return (len(overlap) / max(1, len(position_tokens))) * 20
+
+
+def _category_match_score(category: str | None, subcategory: str | None, product: Product) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+
+    category_norm = _normalize(category)
+    subcategory_norm = _normalize(subcategory)
+    product_category = _normalize(product.kategorie)
+    product_subcategory = _normalize(product.unterkategorie)
+
+    if category_norm and category_norm == product_category:
+        score += 35
+        reasons.append(f"Kategorie passt ({product.kategorie})")
+    elif category_norm and (category_norm in product_category or product_category in category_norm):
+        score += 20
+        reasons.append("Kategorie ähnlich")
+
+    if subcategory_norm and subcategory_norm == product_subcategory:
+        score += 18
+        reasons.append(f"Unterkategorie passt ({product.unterkategorie})")
+    elif subcategory_norm and (subcategory_norm in product_subcategory or product_subcategory in subcategory_norm):
+        score += 10
+        reasons.append("Unterkategorie ähnlich")
+
+    return score, reasons
+
+
+def _dn_score(required_dn: int | None, product: Product) -> tuple[float, list[str]]:
+    if required_dn is None:
+        return 0.0, []
+
+    reasons: list[str] = []
+    if product.nennweite_dn == required_dn:
+        reasons.append(f"DN {required_dn} exakt")
+        return 25.0, reasons
+
+    # Check DN equivalences (e.g. DN100 ↔ DN110)
+    equivalent_dns = DN_EQUIVALENTS.get(required_dn, set())
+    if product.nennweite_dn in equivalent_dns:
+        reasons.append(f"DN {required_dn}≈{product.nennweite_dn} (äquivalent)")
+        return 22.0, reasons
+
+    compatible_dns = _parse_compatible_dns(product.kompatible_dn_anschluss)
+    if required_dn in compatible_dns:
+        reasons.append(f"DN {required_dn} kompatibel")
+        return 16.0, reasons
+
+    # Check equivalents in compatible list too
+    for eq_dn in equivalent_dns:
+        if eq_dn in compatible_dns:
+            reasons.append(f"DN {required_dn}≈{eq_dn} kompatibel")
+            return 14.0, reasons
+
+    return -15.0, [f"DN weicht ab ({product.nennweite_dn or '?'} ≠ {required_dn})"]
+
+
+def _load_class_score(required: str | None, product: Product) -> tuple[float, list[str]]:
+    if not required:
+        return 0.0, []
+
+    required_rank = LOAD_RANK.get(required.upper())
+    product_class = (product.belastungsklasse or "").upper()
+    product_rank = LOAD_RANK.get(product_class)
+
+    if required_rank is None or product_rank is None:
+        return 0.0, []
+
+    if product_rank < required_rank:
+        return -20.0, [f"Belastungsklasse {product_class} unter {required}"]
+    if product_rank == required_rank:
+        return 14.0, [f"Belastungsklasse {product_class} passend"]
+
+    return 10.0, [f"Belastungsklasse {product_class} ueber Anforderung"]
+
+
+def _material_score(required_material: str | None, product: Product) -> tuple[float, list[str]]:
+    if not required_material:
+        return 0.0, []
+
+    required = _normalize(required_material)
+    product_material = _normalize(product.werkstoff)
+    if required and (required in product_material or product_material in required):
+        return 10.0, [f"Werkstoff passt ({product.werkstoff})"]
+    return 0.0, []
+
+
+def _norm_score(required_norm: str | None, product: Product) -> tuple[float, list[str]]:
+    if not required_norm:
+        return 0.0, []
+
+    required = _normalize(required_norm)
+    product_norm = _normalize(product.norm_primaer)
+    if required and required in product_norm:
+        return 8.0, [f"Norm passt ({product.norm_primaer})"]
+    return 0.0, []
+
+
+def load_active_products(db: Session) -> list[Product]:
+    """Load all active products once. Pass the result to suggest_products_for_position."""
+    return list(db.scalars(select(Product).where(Product.status == "aktiv")))
+
+
+def suggest_products_for_position(
+    db: Session,
+    position: LVPosition,
+    limit: int = 3,
+    products: list[Product] | None = None,
+) -> list[ProductSuggestion]:
+    # LLM classification is authoritative — skip service positions entirely
+    if position.position_type == "dienstleistung":
+        return []
+
+    category, subcategory = _guess_category(position)
+    quantity = float(position.quantity or 1)
+    quantity_defaulted = position.quantity is None or position.quantity == 0
+    lower_text = f"{position.description} {position.raw_text}".lower()
+    # Fallback heuristic for regex-parsed positions (position_type is None)
+    is_service_position = position.position_type is None and any(hint in lower_text for hint in SERVICE_HINTS)
+
+    # Reject positions whose description clearly indicates non-catalog items
+    # (catches LLM mis-classifications like "Asphalt" → "Straßenentwässerung")
+    if any(hint in lower_text for hint in NON_PRODUCT_HINTS):
+        return []
+
+    is_relevant_position = (
+        category is not None
+        or position.parameters.nominal_diameter_dn is not None
+        or position.parameters.load_class is not None
+        or position.parameters.material is not None
+    )
+    if not is_relevant_position or (is_service_position and category is None):
+        return []
+
+    if products is None:
+        products = load_active_products(db)
+
+    position_tokens = _extract_tokens(f"{position.description} {position.raw_text}")
+    position_product_type = _detect_product_type(f"{position.description} {position.raw_text}")
+
+    scored: list[tuple[float, Product, list[str], list[ScoreBreakdown]]] = []
+    for product in products:
+        if category:
+            product_category = _normalize(product.kategorie)
+            cat_norm = _normalize(category)
+            if cat_norm not in product_category and product_category not in cat_norm:
+                if not subcategory or _normalize(subcategory) not in _normalize(product.unterkategorie or ""):
+                    continue
+
+        reasons: list[str] = []
+        breakdown: list[ScoreBreakdown] = []
+        score = 0.0
+
+        category_score, category_reasons = _category_match_score(category, subcategory, product)
+        dn_sc, dn_reasons = _dn_score(position.parameters.nominal_diameter_dn, product)
+        load_sc, load_reasons = _load_class_score(position.parameters.load_class, product)
+        material_sc, material_reasons = _material_score(position.parameters.material, product)
+        norm_sc, norm_reasons = _norm_score(position.parameters.norm, product)
+        text_sc = _text_similarity_score(position_tokens, product)
+        ptype_sc, ptype_reasons = _product_type_score(position_product_type, product)
+
+        score += category_score + dn_sc + load_sc + material_sc + norm_sc + text_sc + ptype_sc
+
+        reasons.extend(category_reasons)
+        reasons.extend(dn_reasons)
+        reasons.extend(load_reasons)
+        reasons.extend(material_reasons)
+        reasons.extend(norm_reasons)
+        reasons.extend(ptype_reasons)
+
+        breakdown.append(ScoreBreakdown(component="Kategorie", points=round(category_score, 1), detail="; ".join(category_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="Produkttyp", points=round(ptype_sc, 1), detail="; ".join(ptype_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="DN", points=round(dn_sc, 1), detail="; ".join(dn_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="Belastungsklasse", points=round(load_sc, 1), detail="; ".join(load_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="Werkstoff", points=round(material_sc, 1), detail="; ".join(material_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="Norm", points=round(norm_sc, 1), detail="; ".join(norm_reasons) or "-"))
+        breakdown.append(ScoreBreakdown(component="Textähnlichkeit", points=round(text_sc, 1), detail="-"))
+
+        stock = product.lager_gesamt or 0
+        if stock >= math.ceil(quantity):
+            score += 4
+            reasons.append("Sofort aus Lager verfügbar")
+            breakdown.append(ScoreBreakdown(component="Lager", points=4.0, detail="Sofort verfügbar"))
+        elif stock > 0:
+            score += 1
+            reasons.append("Teilmenge auf Lager")
+            breakdown.append(ScoreBreakdown(component="Lager", points=1.0, detail="Teilmenge"))
+        else:
+            score -= 3
+            reasons.append("Aktuell kein Lagerbestand")
+            breakdown.append(ScoreBreakdown(component="Lager", points=-3.0, detail="Kein Bestand"))
+
+        delivery_sc = 0.0
+        if product.lieferant_1_lieferzeit_tage is not None:
+            if product.lieferant_1_lieferzeit_tage <= 3:
+                delivery_sc = 2.0
+            elif product.lieferant_1_lieferzeit_tage >= 10:
+                delivery_sc = -1.0
+        score += delivery_sc
+        breakdown.append(ScoreBreakdown(component="Lieferzeit", points=delivery_sc, detail=f"{product.lieferant_1_lieferzeit_tage or '?'} Tage"))
+
+        scored.append((score, product, reasons, breakdown))
+
+    if not scored:
+        return []
+
+    ranked = sorted(scored, key=lambda item: item[0], reverse=True)[: max(limit * 2, 6)]
+
+    grouped_by_id: dict[str, tuple[float, Product, list[str], list[ScoreBreakdown]]] = {}
+    for entry in ranked:
+        s, product, _, _ = entry
+        key = product.artikel_id or ""
+        existing = grouped_by_id.get(key)
+        if existing is None or s > existing[0]:
+            grouped_by_id[key] = entry
+
+    min_score = 30.0 if category else 35.0
+    final_candidates = [
+        entry for entry in sorted(grouped_by_id.values(), key=lambda item: item[0], reverse=True) if entry[0] >= min_score
+    ][:limit]
+
+    if not final_candidates:
+        return []
+
+    suggestions: list[ProductSuggestion] = []
+    for s, product, reasons, breakdown in final_candidates:
+        unit_price = _price_for_quantity(product, quantity)
+        total_price = round((unit_price or 0.0) * quantity, 2) if unit_price is not None else None
+
+        reasons_counter = Counter(reasons)
+        deduped_reasons = [reason for reason, _count in reasons_counter.most_common(5)]
+
+        suggestion_warnings: list[str] = []
+        if quantity_defaulted:
+            suggestion_warnings.append("Menge nicht erkannt, Standard 1 verwendet")
+        if unit_price is not None and unit_price == 0.0:
+            suggestion_warnings.append("Listenpreis ist 0 EUR")
+        if unit_price is None:
+            suggestion_warnings.append("Kein Preis verfügbar")
+
+        suggestions.append(
+            ProductSuggestion(
+                artikel_id=product.artikel_id,
+                artikelname=product.artikelname,
+                hersteller=product.hersteller,
+                category=product.kategorie,
+                subcategory=product.unterkategorie,
+                dn=product.nennweite_dn,
+                load_class=product.belastungsklasse,
+                norm=product.norm_primaer,
+                stock=product.lager_gesamt,
+                delivery_days=product.lieferant_1_lieferzeit_tage,
+                price_net=unit_price,
+                total_net=total_price,
+                currency=product.waehrung or "EUR",
+                score=round(s, 2),
+                reasons=deduped_reasons,
+                warnings=suggestion_warnings,
+                score_breakdown=breakdown,
+            )
+        )
+
+    return suggestions

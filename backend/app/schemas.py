@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class TechnicalParameters(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    product_category: str | None = None
+    product_subcategory: str | None = None
+    material: str | None = None
+    nominal_diameter_dn: int | None = None
+    load_class: str | None = None
+    norm: str | None = None
+    dimensions: str | None = None
+    color: str | None = None
+    quantity: float | None = None
+    unit: str | None = None
+    reference_product: str | None = None
+    installation_area: str | None = None
+
+
+class LVPosition(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    ordnungszahl: str
+    description: str
+    raw_text: str
+    quantity: float | None = None
+    unit: str | None = None
+    billable: bool = True
+    position_type: Literal["material", "dienstleistung"] | None = None
+    parameters: TechnicalParameters = Field(default_factory=TechnicalParameters)
+
+
+class ParseLVResponse(BaseModel):
+    positions: list[LVPosition]
+    total_positions: int
+    billable_positions: int
+    service_positions: int = 0
+
+
+class ScoreBreakdown(BaseModel):
+    component: str
+    points: float
+    detail: str
+
+
+class ProductSuggestion(BaseModel):
+    artikel_id: str
+    artikelname: str
+    hersteller: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    dn: int | None = None
+    load_class: str | None = None
+    norm: str | None = None
+    stock: int | None = None
+    delivery_days: int | None = None
+    price_net: float | None = None
+    total_net: float | None = None
+    currency: str = "EUR"
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    score_breakdown: list[ScoreBreakdown] = Field(default_factory=list)
+
+
+class PositionSuggestions(BaseModel):
+    position_id: str
+    ordnungszahl: str
+    description: str
+    suggestions: list[ProductSuggestion] = Field(default_factory=list)
+
+
+class CompatibilityIssue(BaseModel):
+    severity: str
+    rule: str
+    message: str
+    positions: list[str] = Field(default_factory=list)
+
+
+class SuggestionsRequest(BaseModel):
+    positions: list[LVPosition]
+
+
+class SuggestionsResponse(BaseModel):
+    suggestions: list[PositionSuggestions]
+    compatibility_issues: list[CompatibilityIssue]
+
+
+class ExportOfferRequest(BaseModel):
+    positions: list[LVPosition]
+    selected_article_ids: dict[str, str]
+    customer_name: str | None = None
+    project_name: str | None = None
+
+
+class OfferLine(BaseModel):
+    ordnungszahl: str
+    description: str
+    quantity: float
+    unit: str
+    artikel_id: str
+    artikelname: str
+    hersteller: str | None = None
+    price_net: float
+    total_net: float
+
+
+class ExportOfferMetadata(BaseModel):
+    customer_name: str | None = None
+    project_name: str | None = None
+    created_at: datetime
+    total_net: float
+
+
+class ExportWarning(BaseModel):
+    position_id: str
+    ordnungszahl: str
+    reason: str
+
+
+class ExportPreviewResponse(BaseModel):
+    included_count: int
+    total_count: int
+    skipped_positions: list[ExportWarning] = Field(default_factory=list)
+    total_net: float
+
+
+class HealthResponse(BaseModel):
+    status: str

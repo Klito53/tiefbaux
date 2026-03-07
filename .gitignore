@@ -1,11 +1,41 @@
-# Cursor / IDE
-.cursor/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+.env.*
+
+# Database
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+dist/
+
+# PDFs (test data & catalogs)
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Environment / Secrets (nie committen!)
-.env
-.env.local
-*.env
+# CSV data files
+*.csv
+
+# Screenshots / output
+*.png
+output_review_offer*
+
+# Excel
+*.xlsx

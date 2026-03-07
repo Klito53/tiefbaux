@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: tiefbaux-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tiefbaux
+      POSTGRES_USER: tiefbaux
+      POSTGRES_PASSWORD: tiefbaux
+    ports:
+      - "5432:5432"
+    volumes:
+      - tiefbaux_pgdata:/var/lib/postgresql/data
+
+volumes:
+  tiefbaux_pgdata:
