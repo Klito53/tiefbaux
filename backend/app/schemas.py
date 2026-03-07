@@ -97,6 +97,7 @@ class ExportOfferRequest(BaseModel):
     positions: list[LVPosition]
     selected_article_ids: dict[str, str]
     customer_name: str | None = None
+    customer_address: str | None = None
     project_name: str | None = None
 
 
@@ -114,6 +115,7 @@ class OfferLine(BaseModel):
 
 class ExportOfferMetadata(BaseModel):
     customer_name: str | None = None
+    customer_address: str | None = None
     project_name: str | None = None
     created_at: datetime
     total_net: float
@@ -130,6 +132,23 @@ class ExportPreviewResponse(BaseModel):
     total_count: int
     skipped_positions: list[ExportWarning] = Field(default_factory=list)
     total_net: float
+
+
+class ProductSearchResult(BaseModel):
+    artikel_id: str
+    artikelname: str
+    hersteller: str | None = None
+    kategorie: str | None = None
+    nennweite_dn: int | None = None
+    belastungsklasse: str | None = None
+    vk_listenpreis_netto: float | None = None
+    lager_gesamt: int | None = None
+    waehrung: str | None = None
+
+
+class CompatibilityCheckRequest(BaseModel):
+    positions: list[LVPosition]
+    selected_article_ids: dict[str, str]
 
 
 class HealthResponse(BaseModel):

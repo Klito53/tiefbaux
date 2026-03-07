@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import './App.css'
 import { ExportConfirmDialog } from './components/ExportConfirmDialog'
 import { Header } from './components/Header'
@@ -11,6 +12,14 @@ import { useAnalysis } from './hooks/useAnalysis'
 function App() {
   const analysis = useAnalysis()
 
+  const compatibilityIssuePositionIds = useMemo(() => {
+    const ids = new Set<string>()
+    analysis.compatibilityIssues.forEach(issue => {
+      issue.positions.forEach(id => ids.add(id))
+    })
+    return ids
+  }, [analysis.compatibilityIssues])
+
   return (
     <main className="app-shell">
       <Header />
@@ -22,6 +31,8 @@ function App() {
         serviceCount={analysis.serviceCount}
         estimatedTotal={analysis.estimatedTotal}
         compatibilityIssues={analysis.compatibilityIssues}
+        step={analysis.step}
+        onAcceptAllTop={analysis.handleAcceptAllTop}
       />
 
       <section className="workspace">
@@ -49,6 +60,7 @@ function App() {
           suggestionMap={analysis.suggestionMap}
           skippedPositionIds={analysis.skippedPositionIds}
           onToggleSkip={analysis.handleToggleSkip}
+          compatibilityIssuePositionIds={compatibilityIssuePositionIds}
         />
 
         <SuggestionsPanel
@@ -56,6 +68,7 @@ function App() {
           suggestions={analysis.activeSuggestions}
           selectedArticleId={analysis.activePosition ? analysis.selectedArticleIds[analysis.activePosition.id] : undefined}
           onSelectArticle={analysis.handleSuggestionSelect}
+          onManualSelect={analysis.handleManualSelect}
           compatibilityIssues={analysis.compatibilityIssues}
           onParameterChange={analysis.handleParameterChange}
           isRefreshingSuggestions={analysis.isRefreshingSuggestions}

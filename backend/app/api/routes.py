@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import Product
 from ..schemas import (
+    CompatibilityCheckRequest,
+    CompatibilityIssue,
     ExportOfferRequest,
     ExportPreviewResponse,
     ExportWarning,
@@ -18,6 +20,8 @@ from ..schemas import (
     OfferLine,
     ParseLVResponse,
     PositionSuggestions,
+    ProductSearchResult,
+    ProductSuggestion,
     SuggestionsRequest,
     SuggestionsResponse,
 )
@@ -215,7 +219,7 @@ def export_offer(request: ExportOfferRequest, db: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=400, detail="Keine gültigen Artikel für den Export ausgewählt")
 
     total_net = sum(line.total_net for line in lines)
-    metadata = now_metadata(request.customer_name, request.project_name, total_net)
+    metadata = now_metadata(request.customer_name, request.project_name, total_net, request.customer_address)
     pdf_bytes = build_offer_pdf(lines, metadata)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -226,3 +230,73 @@ def export_offer(request: ExportOfferRequest, db: Session = Depends(get_db)) -> 
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/products/search", response_model=list[ProductSearchResult])
+def search_products(
+    q: str = "",
+    category: str | None = None,
+    dn: int | None = None,
+    limit: int = 25,
+    db: Session = Depends(get_db),
+) -> list[ProductSearchResult]:
+    query = select(Product).where(Product.status == "aktiv")
+
+    if q:
+        like_q = f"%{q}%"
+        query = query.where(
+            Product.artikelname.ilike(like_q) | Product.artikelbeschreibung.ilike(like_q)
+        )
+    if category:
+        query = query.where(Product.kategorie == category)
+    if dn is not None:
+        query = query.where(Product.nennweite_dn == dn)
+
+    query = query.limit(limit)
+    products = list(db.scalars(query))
+
+    return [
+        ProductSearchResult(
+            artikel_id=p.artikel_id,
+            artikelname=p.artikelname,
+            hersteller=p.hersteller,
+            kategorie=p.kategorie,
+            nennweite_dn=p.nennweite_dn,
+            belastungsklasse=p.belastungsklasse,
+            vk_listenpreis_netto=p.vk_listenpreis_netto,
+            lager_gesamt=p.lager_gesamt,
+            waehrung=p.waehrung,
+        )
+        for p in products
+    ]
+
+
+@router.post("/compatibility-check", response_model=list[CompatibilityIssue])
+def check_compatibility_endpoint(
+    request: CompatibilityCheckRequest,
+    db: Session = Depends(get_db),
+) -> list[CompatibilityIssue]:
+    positions_by_id = {p.id: p for p in request.positions}
+    selected: list[tuple[LVPosition, ProductSuggestion]] = []
+
+    for pos_id, artikel_id in request.selected_article_ids.items():
+        position = positions_by_id.get(pos_id)
+        if not position:
+            continue
+        product = db.scalar(select(Product).where(Product.artikel_id == artikel_id))
+        if not product:
+            continue
+        selected.append((
+            position,
+            ProductSuggestion(
+                artikel_id=product.artikel_id,
+                artikelname=product.artikelname,
+                category=product.kategorie,
+                subcategory=product.unterkategorie,
+                dn=product.nennweite_dn,
+                load_class=product.belastungsklasse,
+                score=0,
+            ),
+        ))
+
+    return check_compatibility(selected)

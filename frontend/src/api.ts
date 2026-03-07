@@ -1,4 +1,4 @@
-import type { ExportPreviewResponse, LVPosition, ParseResponse, PositionSuggestions, SuggestionResponse } from './types'
+import type { CompatibilityIssue, ExportPreviewResponse, LVPosition, ParseResponse, PositionSuggestions, ProductSearchResult, SuggestionResponse } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
 
@@ -132,4 +132,37 @@ export async function exportOffer(
   }
 
   return await response.blob()
+}
+
+export async function searchProducts(params: {
+  q?: string
+  category?: string
+  dn?: number
+}): Promise<ProductSearchResult[]> {
+  const query = new URLSearchParams()
+  if (params.q) query.set('q', params.q)
+  if (params.category) query.set('category', params.category)
+  if (params.dn != null) query.set('dn', String(params.dn))
+
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/products/search?${query.toString()}`),
+  )
+  return handleResponse<ProductSearchResult[]>(response)
+}
+
+export async function checkCompatibility(
+  positions: LVPosition[],
+  selectedArticleIds: Record<string, string>,
+): Promise<CompatibilityIssue[]> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/compatibility-check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        positions,
+        selected_article_ids: selectedArticleIds,
+      }),
+    }),
+  )
+  return handleResponse<CompatibilityIssue[]>(response)
 }

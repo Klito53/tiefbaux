@@ -20,12 +20,22 @@ type Props = {
   isRefreshing: boolean
 }
 
+function buildSummary(params: LVPosition['parameters']): string {
+  const parts: string[] = []
+  if (params.product_category) parts.push(params.product_category)
+  if (params.nominal_diameter_dn) parts.push(`DN ${params.nominal_diameter_dn}`)
+  if (params.material) parts.push(params.material)
+  if (params.load_class) parts.push(params.load_class)
+  return parts.length > 0 ? parts.join(' · ') : 'Keine Parameter erkannt'
+}
+
 export function ParameterEditor({ position, onParameterChange, isRefreshing }: Props) {
   const params = position.parameters
   const [dn, setDn] = useState(params.nominal_diameter_dn?.toString() ?? '')
   const [category, setCategory] = useState(params.product_category ?? '')
   const [material, setMaterial] = useState(params.material ?? '')
   const [loadClass, setLoadClass] = useState(params.load_class ?? '')
+  const [isCollapsed, setIsCollapsed] = useState(true)
 
   // Sync when position changes
   useEffect(() => {
@@ -73,60 +83,79 @@ export function ParameterEditor({ position, onParameterChange, isRefreshing }: P
 
   return (
     <div className={`parameter-editor ${isRefreshing ? 'refreshing' : ''}`}>
-      <h3 className="param-editor-title">
-        Erkannte Parameter
-        {isRefreshing && <span className="param-spinner" />}
-      </h3>
-      <div className="param-grid">
-        <label className="param-field">
-          <span className="param-label">Kategorie</span>
-          <select
-            value={category}
-            onChange={(e) => handleCategoryChange(e.target.value)}
-            className="param-input"
-          >
-            <option value="">— nicht erkannt —</option>
-            {CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
-            ))}
-          </select>
-        </label>
-        <label className="param-field">
-          <span className="param-label">DN (Nennweite)</span>
-          <input
-            type="number"
-            value={dn}
-            onChange={(e) => setDn(e.target.value)}
-            onBlur={handleDnBlur}
-            onKeyDown={handleDnKeyDown}
-            placeholder="z.B. 200"
-            className="param-input"
-          />
-        </label>
-        <label className="param-field">
-          <span className="param-label">Material</span>
-          <input
-            type="text"
-            value={material}
-            onChange={(e) => setMaterial(e.target.value)}
-            onBlur={handleMaterialBlur}
-            onKeyDown={handleMaterialKeyDown}
-            placeholder="z.B. PVC-U"
-            className="param-input"
-          />
-        </label>
-        <label className="param-field">
-          <span className="param-label">Belastungsklasse</span>
-          <select
-            value={loadClass}
-            onChange={(e) => handleLoadClassChange(e.target.value)}
-            className="param-input"
-          >
-            {LOAD_CLASSES.map((lc) => (
-              <option key={lc} value={lc}>{lc || '— nicht relevant —'}</option>
-            ))}
-          </select>
-        </label>
+      <button
+        type="button"
+        className="param-editor-toggle"
+        aria-expanded={!isCollapsed}
+        onClick={() => setIsCollapsed(!isCollapsed)}
+      >
+        <svg
+          className={`chevron ${isCollapsed ? '' : 'open'}`}
+          width="14" height="14" viewBox="0 0 24 24" fill="none"
+        >
+          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span className="param-toggle-title">
+          Erkannte Parameter
+          {isRefreshing && <span className="param-spinner" />}
+        </span>
+        {isCollapsed && (
+          <span className="param-summary">{buildSummary(params)}</span>
+        )}
+      </button>
+
+      <div className={`param-grid-wrapper ${isCollapsed ? 'collapsed' : 'expanded'}`}>
+        <div className="param-grid">
+          <label className="param-field">
+            <span className="param-label">Kategorie</span>
+            <select
+              value={category}
+              onChange={(e) => handleCategoryChange(e.target.value)}
+              className="param-input"
+            >
+              <option value="">— nicht erkannt —</option>
+              {CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </label>
+          <label className="param-field">
+            <span className="param-label">DN (Nennweite)</span>
+            <input
+              type="number"
+              value={dn}
+              onChange={(e) => setDn(e.target.value)}
+              onBlur={handleDnBlur}
+              onKeyDown={handleDnKeyDown}
+              placeholder="z.B. 200"
+              className="param-input"
+            />
+          </label>
+          <label className="param-field">
+            <span className="param-label">Material</span>
+            <input
+              type="text"
+              value={material}
+              onChange={(e) => setMaterial(e.target.value)}
+              onBlur={handleMaterialBlur}
+              onKeyDown={handleMaterialKeyDown}
+              placeholder="z.B. PVC-U"
+              className="param-input"
+            />
+          </label>
+          <label className="param-field">
+            <span className="param-label">Belastungsklasse</span>
+            <select
+              value={loadClass}
+              onChange={(e) => handleLoadClassChange(e.target.value)}
+              className="param-input"
+            >
+              {LOAD_CLASSES.map((lc) => (
+                <option key={lc} value={lc}>{lc || '— nicht relevant —'}</option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
     </div>
   )

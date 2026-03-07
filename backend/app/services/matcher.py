@@ -69,6 +69,32 @@ NON_PRODUCT_HINTS = (
     "bordstein",
     "fugenmörtel",
     "kabeltrassenband",
+    "trassenwarnband",
+    "sand 0/",
+    "sand 0-",
+    "schotter",
+    "schottertragschicht",
+    "kies ",
+    "oberboden",
+    "rasen ansäen",
+    "rasen ansaeen",
+    "rinnenplatte",
+    "naturstein",
+    "fuge in bit",
+    "gussasphalt",
+    "ersatzboden",
+    "tiefbordstein",
+    "betonpflaster",
+    "plattenbelag",
+    "hydrant",
+    "anbohrschelle",
+    "einbaugarnitur",
+    "hauseinführung",
+    "hauseinfuehrung",
+    "zählereinrichtung",
+    "zaehlereinrichtung",
+    "verbindungsleit",
+    "notversorgungsleitung",
 )
 
 
@@ -91,7 +117,15 @@ def _guess_category(position: LVPosition) -> tuple[str | None, str | None]:
 
     text = f"{position.description} {position.raw_text}".lower()
 
+    # Use OZ prefix to detect domain for pipe positions
+    oz = (position.ordnungszahl or "").strip()
     if re.search(r"\brohr\b", text) and re.search(r"\bdn\s*\d", text):
+        if oz.startswith("25"):
+            return "Gasrohre", None
+        if oz.startswith("30"):
+            return "Wasserrohre", None
+        if oz.startswith("35"):
+            return "Kabelschutz", None
         return "Kanalrohre", "KG-Rohre"
     if re.search(r"\bkg\b", text) and re.search(r"\bdn\b", text):
         return "Kanalrohre", "KG-Rohre"
@@ -252,14 +286,22 @@ def _dn_score(required_dn: int | None, product: Product) -> tuple[float, list[st
         return 0.0, []
 
     reasons: list[str] = []
-    if product.nennweite_dn == required_dn:
+
+    # Try to extract DN from description if product has no nennweite_dn
+    product_dn = product.nennweite_dn
+    if product_dn is None and product.artikelbeschreibung:
+        dn_match = re.search(r"DN/?(?:OD)?\s*(\d+)", product.artikelbeschreibung)
+        if dn_match:
+            product_dn = int(dn_match.group(1))
+
+    if product_dn == required_dn:
         reasons.append(f"DN {required_dn} exakt")
         return 25.0, reasons
 
     # Check DN equivalences (e.g. DN100 ↔ DN110)
     equivalent_dns = DN_EQUIVALENTS.get(required_dn, set())
-    if product.nennweite_dn in equivalent_dns:
-        reasons.append(f"DN {required_dn}≈{product.nennweite_dn} (äquivalent)")
+    if product_dn in equivalent_dns:
+        reasons.append(f"DN {required_dn}≈{product_dn} (äquivalent)")
         return 22.0, reasons
 
     compatible_dns = _parse_compatible_dns(product.kompatible_dn_anschluss)
@@ -273,7 +315,11 @@ def _dn_score(required_dn: int | None, product: Product) -> tuple[float, list[st
             reasons.append(f"DN {required_dn}≈{eq_dn} kompatibel")
             return 14.0, reasons
 
-    return -15.0, [f"DN weicht ab ({product.nennweite_dn or '?'} ≠ {required_dn})"]
+    # Product has no DN info at all — don't penalize, just no bonus
+    if product_dn is None:
+        return 0.0, []
+
+    return -15.0, [f"DN weicht ab ({product_dn} ≠ {required_dn})"]
 
 
 def _load_class_score(required: str | None, product: Product) -> tuple[float, list[str]]:
@@ -301,9 +347,15 @@ def _material_score(required_material: str | None, product: Product) -> tuple[fl
 
     required = _normalize(required_material)
     product_material = _normalize(product.werkstoff)
+
+    if not product_material:
+        return 0.0, []
+
     if required and (required in product_material or product_material in required):
         return 10.0, [f"Werkstoff passt ({product.werkstoff})"]
-    return 0.0, []
+
+    # Explicit material mismatch: position says HDPE but product is PP etc.
+    return -12.0, [f"Werkstoff abweichend ({product.werkstoff} ≠ {required_material})"]
 
 
 def _norm_score(required_norm: str | None, product: Product) -> tuple[float, list[str]]:
@@ -435,7 +487,7 @@ def suggest_products_for_position(
         if existing is None or s > existing[0]:
             grouped_by_id[key] = entry
 
-    min_score = 30.0 if category else 35.0
+    min_score = 35.0 if category else 40.0
     final_candidates = [
         entry for entry in sorted(grouped_by_id.values(), key=lambda item: item[0], reverse=True) if entry[0] >= min_score
     ][:limit]

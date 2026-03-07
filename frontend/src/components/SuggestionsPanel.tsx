@@ -1,11 +1,14 @@
-import type { CompatibilityIssue, LVPosition, ProductSuggestion, TechnicalParameters } from '../types'
+import { useState } from 'react'
+import type { CompatibilityIssue, LVPosition, ProductSearchResult, ProductSuggestion, TechnicalParameters } from '../types'
 import { ParameterEditor } from './ParameterEditor'
+import { ProductSearchModal } from './ProductSearchModal'
 
 type Props = {
   activePosition: LVPosition | null
   suggestions: ProductSuggestion[]
   selectedArticleId: string | undefined
   onSelectArticle: (positionId: string, artikelId: string) => void
+  onManualSelect: (positionId: string, product: ProductSearchResult) => void
   compatibilityIssues: CompatibilityIssue[]
   onParameterChange: (positionId: string, params: Partial<TechnicalParameters>) => void
   isRefreshingSuggestions: boolean
@@ -37,10 +40,32 @@ export function SuggestionsPanel({
   suggestions,
   selectedArticleId,
   onSelectArticle,
+  onManualSelect,
   compatibilityIssues,
   onParameterChange,
   isRefreshingSuggestions,
 }: Props) {
+  const [dismissedIds, setDismissedIds] = useState<Record<string, Set<string>>>({})
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  const posId = activePosition?.id ?? ''
+  const dismissed = dismissedIds[posId] ?? new Set()
+  const visibleSuggestions = suggestions.filter(s => !dismissed.has(s.artikel_id))
+
+  function handleDismiss(artikelId: string) {
+    if (!activePosition) return
+    setDismissedIds(prev => {
+      const current = new Set(prev[posId] ?? [])
+      current.add(artikelId)
+      return { ...prev, [posId]: current }
+    })
+    // If dismissed article was selected, auto-select next
+    if (selectedArticleId === artikelId) {
+      const next = visibleSuggestions.find(s => s.artikel_id !== artikelId)
+      if (next) onSelectArticle(activePosition.id, next.artikel_id)
+    }
+  }
+
   return (
     <aside className="panel suggestions-panel">
       <div className="panel-header">
@@ -73,7 +98,7 @@ export function SuggestionsPanel({
         />
       )}
 
-      {activePosition && suggestions.length === 0 && !isRefreshingSuggestions && (
+      {activePosition && visibleSuggestions.length === 0 && !isRefreshingSuggestions && (
         <div className="no-match-info">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
             <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
@@ -81,59 +106,60 @@ export function SuggestionsPanel({
           </svg>
           <div>
             <strong>Kein passender Artikel gefunden</strong>
-            {activePosition.parameters.product_category ? (
-              <p>Kategorie: {activePosition.parameters.product_category} — kein Treffer im Katalog.</p>
-            ) : (
-              <p>Diese Position konnte keiner Produktkategorie zugeordnet werden. Versuchen Sie, die Kategorie oben manuell zu setzen.</p>
-            )}
+            <p>
+              <button className="link-btn" onClick={() => setSearchOpen(true)}>
+                Katalog manuell durchsuchen
+              </button>
+            </p>
           </div>
         </div>
       )}
 
       <div className="suggestions-list">
         {activePosition &&
-          suggestions.map((suggestion, idx) => {
-            const checked = selectedArticleId === suggestion.artikel_id
+          visibleSuggestions.map((suggestion, idx) => {
+            const isSelected = selectedArticleId === suggestion.artikel_id
             const stock = stockStatus(suggestion.stock)
-            const isBest = idx === 0
+            const isBest = idx === 0 && !suggestion.is_manual
             const hasWarnings = suggestion.warnings.length > 0
 
             return (
-              <label
+              <div
                 key={suggestion.artikel_id}
-                className={`suggestion-card ${checked ? 'selected' : ''}`}
+                className={`suggestion-card ${isSelected ? 'selected' : ''} ${suggestion.is_manual ? 'manual' : ''}`}
               >
-                <input
-                  type="radio"
-                  name={`pick-${activePosition.id}`}
-                  checked={checked}
-                  onChange={() => onSelectArticle(activePosition.id, suggestion.artikel_id)}
-                />
-                <div className="suggestion-body">
+                <div className="suggestion-body" onClick={() => {
+                  if (!isSelected) onSelectArticle(activePosition.id, suggestion.artikel_id)
+                }}>
                   <div className="suggestion-header">
                     <div className="suggestion-title-group">
+                      {suggestion.is_manual && <span className="manual-badge">Manuell gewählt</span>}
                       {isBest && <span className="best-badge">Bester Treffer</span>}
                       <strong className="suggestion-name">{suggestion.artikelname}</strong>
                     </div>
-                    <details className="score-details">
-                      <summary
-                        className="score-badge"
-                        style={{ '--score-color': scoreColor(suggestion.score) } as React.CSSProperties}
-                      >
-                        {suggestion.score.toFixed(0)}
-                      </summary>
-                      <div className="score-breakdown">
-                        {suggestion.score_breakdown.map((b) => (
-                          <div key={b.component} className="breakdown-row">
-                            <span className="breakdown-component">{b.component}</span>
-                            <span className={`breakdown-points ${b.points >= 0 ? 'positive' : 'negative'}`}>
-                              {b.points > 0 ? '+' : ''}{b.points}
-                            </span>
-                            <span className="breakdown-detail">{b.detail}</span>
+                    <div className="suggestion-header-actions">
+                      {!suggestion.is_manual && suggestion.score_breakdown.length > 0 && (
+                        <details className="score-details" onClick={e => e.stopPropagation()}>
+                          <summary
+                            className="score-badge"
+                            style={{ '--score-color': scoreColor(suggestion.score) } as React.CSSProperties}
+                          >
+                            {suggestion.score.toFixed(0)}
+                          </summary>
+                          <div className="score-breakdown">
+                            {suggestion.score_breakdown.map((b) => (
+                              <div key={b.component} className="breakdown-row">
+                                <span className="breakdown-component">{b.component}</span>
+                                <span className={`breakdown-points ${b.points >= 0 ? 'positive' : 'negative'}`}>
+                                  {b.points > 0 ? '+' : ''}{b.points}
+                                </span>
+                                <span className="breakdown-detail">{b.detail}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    </details>
+                        </details>
+                      )}
+                    </div>
                   </div>
 
                   <div className="suggestion-meta">
@@ -179,7 +205,7 @@ export function SuggestionsPanel({
                     </div>
                   )}
 
-                  {suggestion.reasons.length > 0 && (
+                  {suggestion.reasons.length > 0 && !suggestion.is_manual && (
                     <div className="reason-chips">
                       {suggestion.reasons.map((reason) => (
                         <span key={reason} className="reason-chip">{reason}</span>
@@ -187,7 +213,46 @@ export function SuggestionsPanel({
                     </div>
                   )}
                 </div>
-              </label>
+
+                <div className="suggestion-actions">
+                  {isSelected ? (
+                    <div className="action-confirmed" title="Ausgewählt">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                        <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+                  ) : (
+                    <button
+                      className="action-btn accept"
+                      title="Auswählen"
+                      onClick={(e) => { e.stopPropagation(); onSelectArticle(activePosition.id, suggestion.artikel_id) }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                        <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    className="action-btn reject"
+                    title="Ablehnen"
+                    onClick={(e) => { e.stopPropagation(); handleDismiss(suggestion.artikel_id) }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  <button
+                    className="action-btn search"
+                    title="Ersetzen (Katalog durchsuchen)"
+                    onClick={(e) => { e.stopPropagation(); setSearchOpen(true) }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+                      <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
             )
           })}
       </div>
@@ -198,7 +263,9 @@ export function SuggestionsPanel({
         {compatibilityIssues.map((issue) => (
           <div
             key={`${issue.rule}-${issue.message}`}
-            className={`issue-item ${issue.severity === 'KRITISCH' ? 'critical' : 'warning'}`}
+            className={`issue-item ${issue.severity === 'KRITISCH' ? 'critical' : 'warning'} ${
+              activePosition && issue.positions.includes(activePosition.id) ? 'issue-active' : ''
+            }`}
           >
             <div className="issue-header">
               <span className={`issue-severity ${issue.severity === 'KRITISCH' ? 'sev-critical' : 'sev-warning'}`}>
@@ -210,6 +277,16 @@ export function SuggestionsPanel({
           </div>
         ))}
       </div>
+
+      {activePosition && (
+        <ProductSearchModal
+          isOpen={searchOpen}
+          onClose={() => setSearchOpen(false)}
+          onSelect={(product) => onManualSelect(activePosition.id, product)}
+          initialCategory={activePosition.parameters.product_category}
+          initialDn={activePosition.parameters.nominal_diameter_dn}
+        />
+      )}
     </aside>
   )
 }

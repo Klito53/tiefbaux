@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { ApiError, exportOffer, fetchExportPreview, fetchSingleSuggestions, fetchSuggestions, parseLV } from '../api'
+import { ApiError, checkCompatibility, exportOffer, fetchExportPreview, fetchSingleSuggestions, fetchSuggestions, parseLV } from '../api'
 import type {
   AnalysisStep,
   CompatibilityIssue,
   ExportPreviewResponse,
   LVPosition,
   PositionSuggestions,
+  ProductSearchResult,
   ProductSuggestion,
   TechnicalParameters,
 } from '../types'
@@ -28,6 +29,7 @@ export function useAnalysis() {
   const [isRefreshingSuggestions, setIsRefreshingSuggestions] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
+  const compatTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const suggestionMap = useMemo(() => {
     const map: Record<string, ProductSuggestion[]> = {}
@@ -125,12 +127,73 @@ export function useAnalysis() {
     abortRef.current?.abort()
   }, [])
 
-  const handleSuggestionSelect = useCallback((positionId: string, artikelId: string) => {
-    setSelectedArticleIds((current) => ({
-      ...current,
-      [positionId]: artikelId,
-    }))
+  const recheckCompatibility = useCallback((
+    positionsToCheck: LVPosition[],
+    selections: Record<string, string>,
+  ) => {
+    if (compatTimerRef.current) clearTimeout(compatTimerRef.current)
+    compatTimerRef.current = setTimeout(async () => {
+      try {
+        const issues = await checkCompatibility(positionsToCheck, selections)
+        setCompatibilityIssues(issues)
+      } catch {
+        // keep current issues on error
+      }
+    }, 500)
   }, [])
+
+  const handleSuggestionSelect = useCallback((positionId: string, artikelId: string) => {
+    setSelectedArticleIds((current) => {
+      const next = { ...current, [positionId]: artikelId }
+      recheckCompatibility(positions, next)
+      return next
+    })
+  }, [positions, recheckCompatibility])
+
+  const handleManualSelect = useCallback((positionId: string, product: ProductSearchResult) => {
+    // Find position to calculate total price
+    const position = positions.find(p => p.id === positionId)
+    const qty = position?.quantity ?? 1
+    const unitPrice = product.vk_listenpreis_netto ?? null
+    const totalNet = unitPrice != null ? Math.round(unitPrice * qty * 100) / 100 : null
+
+    // Create a synthetic ProductSuggestion from the search result
+    const syntheticSuggestion: ProductSuggestion = {
+      artikel_id: product.artikel_id,
+      artikelname: product.artikelname,
+      hersteller: product.hersteller ?? null,
+      category: product.kategorie ?? null,
+      subcategory: null,
+      dn: product.nennweite_dn ?? null,
+      load_class: product.belastungsklasse ?? null,
+      norm: null,
+      stock: product.lager_gesamt ?? null,
+      delivery_days: null,
+      price_net: unitPrice,
+      total_net: totalNet,
+      currency: product.waehrung ?? 'EUR',
+      score: 0,
+      reasons: ['Manuell gewählt'],
+      warnings: [],
+      score_breakdown: [],
+      is_manual: true,
+    }
+
+    // Inject into positionSuggestions (prepend so it appears first)
+    setPositionSuggestions(prev => prev.map(ps => {
+      if (ps.position_id !== positionId) return ps
+      // Remove any previous manual selection, then prepend
+      const filtered = ps.suggestions.filter(s => !s.is_manual)
+      return { ...ps, suggestions: [syntheticSuggestion, ...filtered] }
+    }))
+
+    // Select this article
+    setSelectedArticleIds(current => {
+      const next = { ...current, [positionId]: product.artikel_id }
+      recheckCompatibility(positions, next)
+      return next
+    })
+  }, [positions, recheckCompatibility])
 
   const handleToggleSkip = useCallback((positionId: string) => {
     setSkippedPositionIds((prev) => {
@@ -161,11 +224,16 @@ export function useAnalysis() {
         prev.map((ps) => (ps.position_id === positionId ? result : ps)),
       )
       if (result.suggestions.length > 0) {
-        setSelectedArticleIds((prev) => ({ ...prev, [positionId]: result.suggestions[0].artikel_id }))
+        setSelectedArticleIds((prev) => {
+          const next = { ...prev, [positionId]: result.suggestions[0].artikel_id }
+          recheckCompatibility(updatedPositions, next)
+          return next
+        })
       } else {
         setSelectedArticleIds((prev) => {
           const next = { ...prev }
           delete next[positionId]
+          recheckCompatibility(updatedPositions, next)
           return next
         })
       }
@@ -174,7 +242,7 @@ export function useAnalysis() {
     } finally {
       setIsRefreshingSuggestions(false)
     }
-  }, [positions])
+  }, [positions, recheckCompatibility])
 
   const handleExportPreview = useCallback(async () => {
     if (positions.length === 0 || selectedCount === 0) {
@@ -237,6 +305,17 @@ export function useAnalysis() {
     setShowExportDialog(false)
   }, [])
 
+  const handleAcceptAllTop = useCallback(() => {
+    const defaults: Record<string, string> = {}
+    positionSuggestions.forEach((entry) => {
+      if (entry.suggestions.length > 0 && !skippedPositionIds.has(entry.position_id)) {
+        defaults[entry.position_id] = entry.suggestions[0].artikel_id
+      }
+    })
+    setSelectedArticleIds(defaults)
+    recheckCompatibility(positions, defaults)
+  }, [positionSuggestions, skippedPositionIds, positions, recheckCompatibility])
+
   const handleReset = useCallback(() => {
     abortRef.current?.abort()
     setFile(null)
@@ -278,11 +357,13 @@ export function useAnalysis() {
     handleAnalyze,
     handleCancel,
     handleSuggestionSelect,
+    handleManualSelect,
     handleToggleSkip,
     handleParameterChange,
     handleExportPreview,
     handleExportConfirm,
     handleExportCancel,
     handleReset,
+    handleAcceptAllTop,
   }
 }

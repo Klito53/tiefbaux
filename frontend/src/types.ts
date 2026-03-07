@@ -49,6 +49,7 @@ export type ProductSuggestion = {
   reasons: string[]
   warnings: string[]
   score_breakdown: ScoreBreakdown[]
+  is_manual?: boolean
 }
 
 export type PositionSuggestions = {
@@ -88,6 +89,18 @@ export type ExportPreviewResponse = {
   total_count: number
   skipped_positions: ExportWarning[]
   total_net: number
+}
+
+export type ProductSearchResult = {
+  artikel_id: string
+  artikelname: string
+  hersteller?: string | null
+  kategorie?: string | null
+  nennweite_dn?: number | null
+  belastungsklasse?: string | null
+  vk_listenpreis_netto?: number | null
+  lager_gesamt?: number | null
+  waehrung?: string | null
 }
 
 export type AnalysisStep = 'idle' | 'uploading' | 'parsing' | 'enriching' | 'matching' | 'done' | 'error'

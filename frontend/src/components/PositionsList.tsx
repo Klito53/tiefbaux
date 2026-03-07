@@ -11,6 +11,7 @@ type Props = {
   suggestionMap: Record<string, ProductSuggestion[]>
   skippedPositionIds: Set<string>
   onToggleSkip: (positionId: string) => void
+  compatibilityIssuePositionIds: Set<string>
 }
 
 function formatQty(value?: number | null): string {
@@ -27,6 +28,7 @@ export function PositionsList({
   suggestionMap,
   skippedPositionIds,
   onToggleSkip,
+  compatibilityIssuePositionIds,
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('')
   const [filterMode, setFilterMode] = useState<FilterMode>('alle')
@@ -145,6 +147,7 @@ export function PositionsList({
           const hasSelection = Boolean(selectedArticleIds[position.id])
           const hasSuggestions = (suggestionMap[position.id] ?? []).length > 0
           const category = position.parameters.product_category
+          const hasCompatIssue = compatibilityIssuePositionIds.has(position.id)
 
           let statusClass = 'status-open'
           if (isSkipped) statusClass = 'status-service'
@@ -154,7 +157,7 @@ export function PositionsList({
           return (
             <div
               key={position.id}
-              className={`position-row ${isActive ? 'active' : ''} ${statusClass}`}
+              className={`position-row ${isActive ? 'active' : ''} ${statusClass} ${hasCompatIssue ? 'has-compat-issue' : ''}`}
               style={{ animationDelay: `${index * 30}ms` }}
             >
               <button
@@ -165,6 +168,13 @@ export function PositionsList({
                 <div className="position-head">
                   <span className="position-no">{position.ordnungszahl}</span>
                   <div className="position-badges">
+                    {hasCompatIssue && (
+                      <span className="badge badge-compat" title="Kompatibilitätsproblem">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                          <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    )}
                     {category && <span className="badge badge-category">{category}</span>}
                     {isSkipped ? (
                       <span className="badge badge-service">
@@ -178,6 +188,19 @@ export function PositionsList({
                   </div>
                 </div>
                 <p className="position-desc">{position.description}</p>
+                {hasSelection && (() => {
+                  const selectedArt = (suggestionMap[position.id] ?? []).find(
+                    s => s.artikel_id === selectedArticleIds[position.id]
+                  )
+                  return selectedArt ? (
+                    <div className="position-selected-article">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                        <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      <span>{selectedArt.artikelname}</span>
+                    </div>
+                  ) : null
+                })()}
                 <div className="position-meta">
                   <span>Menge: {formatQty(position.quantity)} {position.unit ?? ''}</span>
                   {position.parameters.nominal_diameter_dn != null && (
