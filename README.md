@@ -1,107 +1,117 @@
-# TiefbauX MVP
+# TiefbauX
 
-Voll funktionsfaehiger MVP fuer den LV-Workflow im Tiefbau:
+LV-Analyse-Tool fuer den Tiefbau-Workflow bei Fassbender Tenten:
 
-1. LV als PDF hochladen.
-2. Positionen automatisch extrahieren und technisch interpretieren.
-3. Passende Artikel aus der Produktdatenbank vorschlagen.
-4. Kompatibilitaetsregeln pruefen.
-5. Befuelltes Angebot als PDF exportieren.
+1. Leistungsverzeichnis als PDF hochladen
+2. Positionen automatisch extrahieren und technisch interpretieren (Gemini LLM)
+3. Passende Artikel aus der Produktdatenbank matchen (3.300+ Produkte)
+4. Zuordnung im Widget-basierten Workflow pruefen und anpassen
+5. Angebot als PDF exportieren
 
 ## Tech Stack
 
-- Frontend: React + TypeScript + Vite
-- Backend: FastAPI + SQLAlchemy
-- Datenbank: PostgreSQL (MVP kann fuer lokale Entwicklung auch mit SQLite laufen)
-- PDF: `pdfplumber` (Parsing), `reportlab` (Angebotsexport)
-- KI: Gemini 2.5 Flash optional (Fallback auf lokale Heuristik wenn kein API-Key gesetzt ist)
+- **Frontend:** React 19 + TypeScript + Vite
+- **Backend:** FastAPI + SQLAlchemy + SQLite
+- **PDF:** pdfplumber (Parsing), reportlab (Angebotsexport)
+- **KI:** Gemini Flash (PDF-Parsing + Parameter-Enrichment)
 
-## Projektstruktur
+## Voraussetzungen
 
-- `/Users/mirco/TiefbauX/backend` FastAPI API, Matching-Engine, PDF-Export
-- `/Users/mirco/TiefbauX/frontend` React MVP UI (3-Spalten-Layout)
-- `/Users/mirco/TiefbauX/TiefbauX_Dummy_Datenbank_v2.xlsx - Artikel.csv` Produktkatalog-Quelle
+- Python 3.11+
+- Node.js 18+
+- Gemini API Key ([Google AI Studio](https://aistudio.google.com/))
 
 ## Schnellstart
 
-### 1) PostgreSQL starten
-
-Option A: lokal vorhandene Postgres-Instanz nutzen.
-
-Option B: mit Compose starten:
+### 1) Backend
 
 ```bash
-docker compose up -d postgres
+cd backend
+
+# Virtuelle Umgebung erstellen & aktivieren
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+# .venv\Scripts\activate    # Windows
+
+# Dependencies installieren
+pip install -r requirements.txt
+
+# Umgebungsvariablen konfigurieren
+cp .env.example .env
+# .env bearbeiten und GEMINI_API_KEY eintragen
+
+# Server starten
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-DB-Zugang fuer Compose-Variante:
+Die SQLite-Datenbank (`tiefbaux.db`) mit dem Produktkatalog ist bereits im Repository enthalten.
 
-- DB: `tiefbaux`
-- User: `tiefbaux`
-- Passwort: `tiefbaux`
-- Port: `5432`
-
-### 2) Backend starten
+### 2) Frontend
 
 ```bash
-cd /Users/mirco/TiefbauX/backend
-cp .env.example .env
-python3 -m pip install -r requirements.txt
-python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
+cd frontend
 
-Hinweise:
-
-- Beim ersten Start werden Tabellen erstellt und die Artikel aus CSV in die DB importiert.
-- Ohne `GEMINI_API_KEY` laeuft die Interpretation mit robustem Heuristik-Fallback.
-
-### 3) Frontend starten
-
-```bash
-cd /Users/mirco/TiefbauX/frontend
-cp .env.example .env
+# Dependencies installieren
 npm install
+
+# .env anlegen
+cp .env.example .env
+
+# Dev-Server starten
 npm run dev
 ```
 
-Dann im Browser: `http://localhost:5173`
-
-## API Endpunkte (MVP)
-
-- `POST /api/parse-lv`
-  - Input: PDF Upload (`multipart/form-data`, Feld `file`)
-  - Output: erkannte/bepreisbare Positionen inkl. technischer Parameter
-
-- `POST /api/suggestions`
-  - Input: Positionen aus `parse-lv`
-  - Output: 1-3 Artikelvorschlaege je Position + Kompatibilitaetshinweise
-
-- `POST /api/export-offer`
-  - Input: Positionen + ausgewaehlte Artikelzuordnung
-  - Output: Angebots-PDF (Download)
-
-## Frontend-Workflow
-
-1. Linke Spalte: PDF uploaden und Analyse starten.
-2. Mittlere Spalte: erkannte LV-Positionen pruefen/anklicken.
-3. Rechte Spalte: Artikelvorschlaege pro Position auswaehlen.
-4. Angebot exportieren.
+Dann im Browser: http://localhost:5173
 
 ## Umgebungsvariablen
 
-Backend (`/Users/mirco/TiefbauX/backend/.env`):
+**Backend** (`backend/.env`):
 
-- `DATABASE_URL` (z. B. `postgresql+psycopg://tiefbaux:tiefbaux@localhost:5432/tiefbaux`)
-- `GEMINI_API_KEY` (optional)
-- `GEMINI_MODEL` (default `gemini-2.5-flash`)
-- `CORS_ORIGINS` (comma separated)
+| Variable | Default | Beschreibung |
+|----------|---------|-------------|
+| `DATABASE_URL` | `sqlite:///./tiefbaux.db` | Datenbank-URL |
+| `GEMINI_API_KEY` | - | Google Gemini API Key (erforderlich fuer LV-Analyse) |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini-Modell |
+| `CORS_ORIGINS` | `http://localhost:5173,...` | Erlaubte Origins |
 
-Frontend (`/Users/mirco/TiefbauX/frontend/.env`):
+**Frontend** (`frontend/.env`):
 
-- `VITE_API_BASE_URL` (default `http://localhost:8000/api`)
+| Variable | Default | Beschreibung |
+|----------|---------|-------------|
+| `VITE_API_BASE_URL` | `http://localhost:8000/api` | Backend-API-URL |
 
-## MVP Grenzen
+## Projektstruktur
 
-- Fokus auf PDF-LVs (GAEB noch nicht enthalten)
-- Positionssplit und Parameterextraktion sind auf Robustheit fuer MVP optimiert, nicht auf 100% Vollstaendigkeit jeder LV-Variante
-- Kompatibilitaetsengine deckt die wichtigsten Tiefbau-Regeln ab und kann einfach erweitert werden
+```
+backend/
+  app/
+    api/routes.py          # API-Endpoints
+    services/
+      llm_parser.py        # PDF-Parsing via Gemini LLM
+      ai_interpreter.py    # Parameter-Enrichment (Heuristik + Gemini)
+      matcher.py           # Produkt-Matching-Engine (Multi-Faktor-Scoring)
+      offer_export.py      # Angebots-PDF-Export
+    models.py              # SQLAlchemy-Modelle
+    schemas.py             # Pydantic-Schemas
+    config.py              # Settings aus .env
+  scripts/                 # Import-Scripts fuer Produktdaten
+  tiefbaux.db              # SQLite DB (3.300+ Produkte)
+
+frontend/
+  src/
+    hooks/useAnalysis.ts   # Haupt-State-Management
+    components/            # React-Komponenten
+    api.ts                 # Backend-API-Client
+    types.ts               # TypeScript-Typen
+```
+
+## Produktdatenbank
+
+Aktuell 3.300 Produkte von 4 Herstellern:
+
+| Hersteller | Produkte | Sortiment |
+|------------|----------|-----------|
+| ACO | 1.909 | Rinnen, Hofablaeufe, Strassenentwaesserung |
+| Wavin | 826 | KG/PP-Rohre, Schachtbauteile, Versickerung |
+| Muffenrohr | 339 | KG PVC-U SN4, PP SN10 gruen (Eigenmarken) |
+| REHAU | 226 | AWADUKT HPP SN10/16 |
