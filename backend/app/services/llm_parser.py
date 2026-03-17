@@ -108,7 +108,7 @@ METADATA_INSTRUCTION = (
     "- bauvorhaben: string | null (Bauvorhaben-Bezeichnung, Projekttitel)\n"
     "- objekt_nr: string | null (Objekt-/Projektnummer, Vergabenummer, Ausschreibungsnummer)\n"
     "- submission_date: string | null (Submissionsdatum/Angebotsfrist im Format TT.MM.JJJJ)\n"
-    "- auftraggeber: string | null (Auftraggeber/Bauherr)\n"
+    "- auftraggeber: string | null (Name der auftraggebenden Organisation/Firma/Behörde/Kommune, NICHT der persönliche Name des Bauherrn)\n"
     "- kunde_name: string | null (Name des Unternehmens das die Anfrage/Ausschreibung stellt)\n"
     "- kunde_adresse: string | null (Adresse des Absenders/Anfragenden)\n\n"
     "Gib NUR das JSON-Objekt zurueck, keine Erklaerung."
@@ -451,6 +451,96 @@ def _validate_with_heuristics(positions: list[LVPosition]) -> list[LVPosition]:
     return validated
 
 
+_OZ_LINE_RE = re.compile(r"^\s*(\d+[\d.]*\d)\s")
+
+
+def _map_oz_to_page(pdf_bytes: bytes, ordnungszahlen: list[str]) -> dict[str, int]:
+    """Find the actual 1-based PDF page number for each ordnungszahl."""
+    result: dict[str, int] = {}
+    wanted = set(ordnungszahlen)
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            for line in text.split("\n"):
+                m = _OZ_LINE_RE.match(line)
+                if m and "." in m.group(1):
+                    oz = m.group(1)
+                    if oz in wanted and oz not in result:
+                        result[oz] = page_num
+    return result
+_SKIP_LINE_RE = re.compile(
+    r"^\s*(Architekt|Objekt\s*:|Bauherr|Seite\s+\d|LEISTUNGSVERZEICHNIS|"
+    r"Leistungsbeschreibung auf vo|POS\.\s|---)",
+    re.IGNORECASE,
+)
+
+
+def _extract_raw_texts_from_pages(
+    pages: list[str], ordnungszahlen: list[str],
+) -> dict[str, str]:
+    """Extract the original LV text for each position by finding its ordnungszahl in the PDF pages.
+
+    Returns a dict mapping ordnungszahl → raw text block from the PDF.
+    """
+    full_text = "\n".join(pages)
+    lines = full_text.split("\n")
+
+    # Find ALL OZ-like line starts in the full text
+    all_oz_lines: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        m = _OZ_LINE_RE.match(line)
+        if m:
+            oz_candidate = m.group(1)
+            # Must have at least one dot and look like an OZ (not page numbers etc.)
+            if "." in oz_candidate:
+                all_oz_lines.append((i, oz_candidate))
+
+    wanted = set(ordnungszahlen)
+
+    result: dict[str, str] = {}
+    for idx, (start_line, oz) in enumerate(all_oz_lines):
+        if oz not in wanted:
+            continue
+
+        # End is start of next OZ line (any OZ)
+        if idx + 1 < len(all_oz_lines):
+            end_line = all_oz_lines[idx + 1][0]
+        else:
+            end_line = min(start_line + 30, len(lines))
+
+        # Collect description lines — skip headers, dotted lines, blank filler
+        block_lines: list[str] = []
+        for j in range(start_line, end_line):
+            line = lines[j]
+            # First line: strip the OZ prefix, keep description text if present
+            if j == start_line:
+                # Remove OZ number from start of line
+                stripped = _OZ_LINE_RE.sub("", line, count=1).strip()
+                # If what remains is just quantity + underscores, skip entirely
+                if not stripped or "________" in stripped or re.match(r"^[\d.,]+\s+(Stück|Stk|St|m2|m²|m3|m³|m|lfm|lfdm|lfd\.m|kg|to|t|h|Std|StD|Psch|psch|Pausch|Wo|mWo|cbm)\s", stripped, re.IGNORECASE):
+                    continue
+                block_lines.append(stripped)
+                continue
+            if _SKIP_LINE_RE.match(line):
+                continue
+            # Skip dotted/underscore placeholder lines
+            if "________" in line or ".................." in line:
+                continue
+            # Skip standalone quantity lines like "35,000 m ______"
+            if re.match(r"^\s*[\d.,]+\s+(Stück|Stk|St|m2|m²|m3|m³|m|lfm|lfdm|lfd\.m|kg|to|t|h|Std|StD|Psch|psch|Pausch|Wo|mWo|cbm)\b", line, re.IGNORECASE):
+                continue
+            block_lines.append(line)
+
+        # Trim trailing blank lines
+        while block_lines and not block_lines[-1].strip():
+            block_lines.pop()
+
+        if block_lines:
+            result[oz] = "\n".join(block_lines)
+
+    return result
+
+
 def parse_lv_with_llm(pdf_bytes: bytes) -> tuple[list[LVPosition], ProjectMetadata]:
     """Parse an LV PDF using Gemini LLM for position extraction and classification.
 
@@ -497,6 +587,18 @@ def parse_lv_with_llm(pdf_bytes: bytes) -> tuple[list[LVPosition], ProjectMetada
     deduped.sort(key=_sort_key)
 
     positions = [_assemble_position(idx, raw) for idx, raw in enumerate(deduped, start=1)]
+
+    # Extract original raw text and correct source pages from PDF
+    oz_list = [p.ordnungszahl for p in positions]
+    raw_texts = _extract_raw_texts_from_pages(pages, oz_list)
+    oz_pages = _map_oz_to_page(pdf_bytes, oz_list)
+    positions = [
+        p.model_copy(update={
+            **({"raw_text": raw_texts[p.ordnungszahl]} if p.ordnungszahl in raw_texts else {}),
+            **({"source_page": oz_pages[p.ordnungszahl]} if p.ordnungszahl in oz_pages else {}),
+        })
+        for p in positions
+    ]
 
     # Validate with heuristics to fill gaps
     positions = _validate_with_heuristics(positions)

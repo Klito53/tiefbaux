@@ -1,4 +1,4 @@
-import type { CompatibilityIssue, ExportPreviewResponse, LVPosition, ParseResponse, PositionSuggestions, ProductSearchResult, ProjectDetailResponse, ProjectSummary, Supplier, SupplierInquiry, SuggestionResponse, TechnicalParameters } from './types'
+import type { ExportPreviewResponse, LVPosition, ParseResponse, PositionSuggestions, ProductSearchResult, ProjectDetailResponse, ProjectSummary, Supplier, SupplierInquiry, SuggestionResponse, TechnicalParameters, Tender } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
 
@@ -82,10 +82,12 @@ export async function fetchSingleSuggestions(position: LVPosition): Promise<Posi
 
 export async function fetchExportPreview(
   positions: LVPosition[],
-  selectedArticleIds: Record<string, string>,
+  selectedArticleIds: Record<string, string[]>,
   customerName: string,
   projectName: string,
   customUnitPrices?: Record<string, number>,
+  alternativeFlags?: Record<string, boolean>,
+  supplierOpenFlags?: Record<string, boolean>,
 ): Promise<ExportPreviewResponse> {
   const response = await wrapFetch(
     fetch(`${API_BASE}/export-preview`, {
@@ -97,6 +99,8 @@ export async function fetchExportPreview(
         customer_name: customerName,
         project_name: projectName,
         custom_unit_prices: customUnitPrices,
+        alternative_flags: alternativeFlags,
+        supplier_open_flags: supplierOpenFlags,
       }),
     }),
   )
@@ -105,10 +109,12 @@ export async function fetchExportPreview(
 
 export async function exportOffer(
   positions: LVPosition[],
-  selectedArticleIds: Record<string, string>,
+  selectedArticleIds: Record<string, string[]>,
   customerName: string,
   projectName: string,
   customUnitPrices?: Record<string, number>,
+  alternativeFlags?: Record<string, boolean>,
+  supplierOpenFlags?: Record<string, boolean>,
 ): Promise<Blob> {
   const response = await wrapFetch(
     fetch(`${API_BASE}/export-offer`, {
@@ -120,6 +126,8 @@ export async function exportOffer(
         customer_name: customerName,
         project_name: projectName,
         custom_unit_prices: customUnitPrices,
+        alternative_flags: alternativeFlags,
+        supplier_open_flags: supplierOpenFlags,
       }),
     }),
   )
@@ -142,11 +150,19 @@ export async function searchProducts(params: {
   q?: string
   category?: string
   dn?: number
+  sn?: string
+  load_class?: string
+  material?: string
+  angle?: number
 }): Promise<ProductSearchResult[]> {
   const query = new URLSearchParams()
   if (params.q) query.set('q', params.q)
   if (params.category) query.set('category', params.category)
   if (params.dn != null) query.set('dn', String(params.dn))
+  if (params.sn) query.set('sn', params.sn)
+  if (params.load_class) query.set('load_class', params.load_class)
+  if (params.material) query.set('material', params.material)
+  if (params.angle != null) query.set('angle', String(params.angle))
 
   const response = await wrapFetch(
     fetch(`${API_BASE}/products/search?${query.toString()}`),
@@ -154,22 +170,6 @@ export async function searchProducts(params: {
   return handleResponse<ProductSearchResult[]>(response)
 }
 
-export async function checkCompatibility(
-  positions: LVPosition[],
-  selectedArticleIds: Record<string, string>,
-): Promise<CompatibilityIssue[]> {
-  const response = await wrapFetch(
-    fetch(`${API_BASE}/compatibility-check`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        positions,
-        selected_article_ids: selectedArticleIds,
-      }),
-    }),
-  )
-  return handleResponse<CompatibilityIssue[]>(response)
-}
 
 export async function fetchProjects(q?: string): Promise<ProjectSummary[]> {
   const params = q ? `?q=${encodeURIComponent(q)}` : ''
@@ -191,7 +191,7 @@ export async function deleteProject(projectId: number): Promise<void> {
   }
 }
 
-export async function saveSelections(projectId: number, selectedArticleIds: Record<string, string>): Promise<void> {
+export async function saveSelections(projectId: number, selectedArticleIds: Record<string, string[]>): Promise<void> {
   await wrapFetch(
     fetch(`${API_BASE}/projects/save-selections`, {
       method: 'POST',
@@ -268,6 +268,38 @@ export async function createInquiry(data: {
   return handleResponse<SupplierInquiry>(response)
 }
 
+export async function createInquiryBatch(data: {
+  supplier_ids: number[]
+  project_id?: number | null
+  position_id?: string | null
+  ordnungszahl?: string | null
+  product_description: string
+  technical_params?: TechnicalParameters | null
+  quantity?: number | null
+  unit?: string | null
+  custom_message?: string | null
+}): Promise<SupplierInquiry[]> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/inquiries/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+  )
+  return handleResponse<SupplierInquiry[]>(response)
+}
+
+export async function sendBatchInquiries(projectId: number): Promise<{ sent_count: number; failed_count: number }> {
+  const response = await wrapFetch(
+    fetch(`${API_BASE}/inquiries/send-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  )
+  return handleResponse<{ sent_count: number; failed_count: number }>(response)
+}
+
 export async function fetchInquiries(projectId?: number): Promise<SupplierInquiry[]> {
   const params = projectId != null ? `?project_id=${projectId}` : ''
   const response = await wrapFetch(fetch(`${API_BASE}/inquiries${params}`))
@@ -284,6 +316,43 @@ export async function updateInquiryStatus(
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, notes }),
+    }),
+  )
+}
+
+
+// ── Objektradar / Tenders ──
+
+export async function fetchTenders(status?: string, minRelevance?: number): Promise<Tender[]> {
+  const params = new URLSearchParams()
+  if (status) params.set('status', status)
+  if (minRelevance && minRelevance > 0) params.set('min_relevance', String(minRelevance))
+  const qs = params.toString()
+  return handleResponse<Tender[]>(
+    await wrapFetch(fetch(`${API_BASE}/tenders${qs ? '?' + qs : ''}`)),
+  )
+}
+
+export async function refreshTenders(): Promise<{ status: string }> {
+  return handleResponse(
+    await wrapFetch(
+      fetch(`${API_BASE}/tenders/refresh`, { method: 'POST' }),
+    ),
+  )
+}
+
+export async function getRefreshStatus(): Promise<{ running: boolean; last_result: any }> {
+  return handleResponse(
+    await wrapFetch(fetch(`${API_BASE}/tenders/refresh-status`)),
+  )
+}
+
+export async function updateTenderStatus(tenderId: number, status: string): Promise<void> {
+  await wrapFetch(
+    fetch(`${API_BASE}/tenders/${tenderId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
     }),
   )
 }

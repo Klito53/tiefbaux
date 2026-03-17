@@ -10,18 +10,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import LVProject, LVProjectPosition, ManualOverride, Product, Supplier, SupplierInquiry
+from ..models import LVProject, LVProjectPosition, ManualOverride, Product, Supplier, SupplierInquiry, Tender
 from ..schemas import (
-    CompatibilityCheckRequest,
-    CompatibilityIssue,
+    ComponentSuggestions,
     DuplicateInfo,
     ExportOfferRequest,
     ExportPreviewResponse,
     ExportWarning,
     HealthResponse,
+    InquiryBatchCreateRequest,
     InquiryCreateRequest,
     InquiryResponse,
     InquiryStatusUpdate,
+    BatchSendRequest,
+    BatchSendResponse,
     LVPosition,
     OfferLine,
     OverrideRequest,
@@ -38,14 +40,15 @@ from ..schemas import (
     SuggestionsRequest,
     SuggestionsResponse,
     TechnicalParameters,
+    TenderResponse,
+    TenderStatusUpdate,
 )
 import logging
 
 from ..config import settings
 from ..services.ai_interpreter import enrich_positions_with_parameters
-from ..services.compatibility import check_compatibility
 from ..services.llm_parser import parse_lv_with_llm
-from ..services.matcher import _description_hash, load_active_products, suggest_products_for_position
+from ..services.matcher import _description_hash, load_active_products, suggest_products_for_component, suggest_products_for_position
 from ..services.offer_export import build_offer_pdf, now_metadata
 from ..services.pdf_parser import extract_positions_from_pdf
 
@@ -56,6 +59,30 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api", tags=["tiefbaux"])
+
+
+def _enrich_from_pdf(positions: list[LVPosition], pdf_path: str | None) -> list[LVPosition]:
+    """Enrich positions with raw_text and correct source_page from stored PDF."""
+    if not pdf_path or not os.path.exists(pdf_path):
+        return positions
+    try:
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        from ..services.llm_parser import extract_raw_text_pages, _extract_raw_texts_from_pages, _map_oz_to_page
+        pdf_pages = extract_raw_text_pages(pdf_bytes)
+        oz_list = [p.ordnungszahl for p in positions]
+        raw_texts = _extract_raw_texts_from_pages(pdf_pages, oz_list)
+        oz_pages = _map_oz_to_page(pdf_bytes, oz_list)
+        return [
+            p.model_copy(update={
+                **({"raw_text": raw_texts[p.ordnungszahl]} if p.ordnungszahl in raw_texts else {}),
+                **({"source_page": oz_pages[p.ordnungszahl]} if p.ordnungszahl in oz_pages else {}),
+            })
+            for p in positions
+        ]
+    except Exception as exc:
+        logger.warning("Failed to enrich from PDF: %s", exc)
+        return positions
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -129,6 +156,14 @@ def _store_project(
     db.add(project)
     db.flush()
 
+    # Generate sequential project number: P-YYMM-NNN
+    now = datetime.utcnow()
+    prefix = f"P-{now:%y%m}-"
+    existing_count = db.query(LVProject).filter(
+        LVProject.projekt_nr.like(f"{prefix}%")
+    ).count()
+    project.projekt_nr = f"{prefix}{existing_count + 1:03d}"
+
     for pos in positions:
         db.add(LVProjectPosition(
             project_id=project.id,
@@ -166,6 +201,8 @@ async def parse_lv(file: UploadFile = File(...), db: Session = Depends(get_db)) 
     if existing:
         logger.info("Duplicate LV detected (hash=%s, project_id=%d)", content_hash[:12], existing.id)
         positions = _reconstruct_positions(existing.positions)
+        # Enrich raw_text + source_page from stored PDF
+        positions = _enrich_from_pdf(positions, existing.pdf_path)
         metadata = ProjectMetadata(
             bauvorhaben=existing.bauvorhaben,
             objekt_nr=existing.objekt_nr,
@@ -262,18 +299,34 @@ def get_suggestions(request: SuggestionsRequest, db: Session = Depends(get_db)) 
     for position, final_suggestions in scored_pairs:
         for s in final_suggestions:
             s.confidence = _compute_confidence(s)
+
+        # Multi-component matching
+        comp_suggestions: list[ComponentSuggestions] | None = None
+        if position.parameters.components and len(position.parameters.components) > 1:
+            comp_suggestions = []
+            for comp in position.parameters.components:
+                comp_results = suggest_products_for_component(db, comp, products)
+                for cs in comp_results:
+                    cs.confidence = _compute_confidence(cs)
+                comp_suggestions.append(ComponentSuggestions(
+                    component_name=comp.component_name,
+                    quantity=comp.quantity,
+                    suggestions=comp_results,
+                ))
+
         position_suggestions.append(
             PositionSuggestions(
                 position_id=position.id,
                 ordnungszahl=position.ordnungszahl,
                 description=position.description,
                 suggestions=final_suggestions,
+                component_suggestions=comp_suggestions,
             )
         )
         if final_suggestions:
             selected_for_check.append((position, final_suggestions[0]))
 
-    return SuggestionsResponse(suggestions=position_suggestions, compatibility_issues=[])
+    return SuggestionsResponse(suggestions=position_suggestions)
 
 
 
@@ -308,70 +361,78 @@ def _build_offer_lines(
 
     # Check for material positions without article assignment (skip Dienstleistungen)
     for position in request.positions:
-        if position.id not in request.selected_article_ids and position.position_type != "dienstleistung":
+        art_ids = request.selected_article_ids.get(position.id, [])
+        if not art_ids and position.position_type != "dienstleistung":
             warnings.append(ExportWarning(
                 position_id=position.id,
                 ordnungszahl=position.ordnungszahl,
                 reason="Kein Artikel zugeordnet",
             ))
 
-    for position_id, artikel_id in request.selected_article_ids.items():
+    for position_id, artikel_ids in request.selected_article_ids.items():
         position = positions_by_id.get(position_id)
         if position is None:
             continue
 
-        product = db.scalar(select(Product).where(Product.artikel_id == artikel_id))
-        if product is None:
-            warnings.append(ExportWarning(
-                position_id=position_id,
-                ordnungszahl=position.ordnungszahl if position else "?",
-                reason=f"Artikel {artikel_id} nicht in Datenbank gefunden",
-            ))
-            continue
+        for art_idx, artikel_id in enumerate(artikel_ids):
+            is_additional = art_idx > 0
+            product = db.scalar(select(Product).where(Product.artikel_id == artikel_id))
+            if product is None:
+                warnings.append(ExportWarning(
+                    position_id=position_id,
+                    ordnungszahl=position.ordnungszahl if position else "?",
+                    reason=f"Artikel {artikel_id} nicht in Datenbank gefunden",
+                ))
+                continue
 
-        quantity = float(position.quantity or 1)
-        unit = position.unit or product.preiseinheit or "Stk"
-        unit_price = _resolve_unit_price(product, quantity)
+            quantity = float(position.quantity or 1)
+            unit = position.unit or product.preiseinheit or "Stk"
+            unit_price = _resolve_unit_price(product, quantity)
 
-        if unit_price is None:
-            unit_price = 0.0
-            warnings.append(ExportWarning(
-                position_id=position_id,
-                ordnungszahl=position.ordnungszahl,
-                reason="Kein Preis verfügbar, 0 EUR verwendet",
-            ))
-
-        custom_unit_price = request.custom_unit_prices.get(position_id)
-        if custom_unit_price is not None:
-            if custom_unit_price < unit_price:
+            if unit_price is None:
+                unit_price = 0.0
                 warnings.append(ExportWarning(
                     position_id=position_id,
                     ordnungszahl=position.ordnungszahl,
-                    reason="VK unter EK nicht erlaubt, EK verwendet",
+                    reason=f"Kein Preis verfügbar für {artikel_id}, 0 EUR verwendet",
                 ))
-            unit_price = max(unit_price, custom_unit_price)
 
-        if position.quantity is None:
-            warnings.append(ExportWarning(
-                position_id=position_id,
-                ordnungszahl=position.ordnungszahl,
-                reason="Menge nicht erkannt, Standard 1 verwendet",
-            ))
+            # Custom unit prices only apply to primary article
+            if not is_additional:
+                custom_unit_price = request.custom_unit_prices.get(position_id)
+                if custom_unit_price is not None:
+                    if custom_unit_price < unit_price:
+                        warnings.append(ExportWarning(
+                            position_id=position_id,
+                            ordnungszahl=position.ordnungszahl,
+                            reason="VK unter EK nicht erlaubt, EK verwendet",
+                        ))
+                    unit_price = max(unit_price, custom_unit_price)
 
-        total = round(unit_price * quantity, 2)
-        lines.append(
-            OfferLine(
-                ordnungszahl=position.ordnungszahl,
-                description=position.description,
-                quantity=quantity,
-                unit=unit,
-                artikel_id=product.artikel_id,
-                artikelname=product.artikelname,
-                hersteller=product.hersteller,
-                price_net=round(unit_price, 2),
-                total_net=total,
+                if position.quantity is None:
+                    warnings.append(ExportWarning(
+                        position_id=position_id,
+                        ordnungszahl=position.ordnungszahl,
+                        reason="Menge nicht erkannt, Standard 1 verwendet",
+                    ))
+
+            total = round(unit_price * quantity, 2)
+            lines.append(
+                OfferLine(
+                    ordnungszahl=position.ordnungszahl,
+                    description=position.description,
+                    quantity=quantity,
+                    unit=unit,
+                    artikel_id=product.artikel_id,
+                    artikelname=product.artikelname,
+                    hersteller=product.hersteller,
+                    price_net=round(unit_price, 2),
+                    total_net=total,
+                    is_additional=is_additional,
+                    is_alternative=request.alternative_flags.get(position_id, False),
+                    supplier_open=request.supplier_open_flags.get(position_id, False),
+                )
             )
-        )
 
     return lines, warnings
 
@@ -414,6 +475,10 @@ def search_products(
     q: str = "",
     category: str | None = None,
     dn: int | None = None,
+    sn: str | None = None,
+    load_class: str | None = None,
+    material: str | None = None,
+    angle: int | None = None,
     limit: int = 25,
     db: Session = Depends(get_db),
 ) -> list[ProductSearchResult]:
@@ -428,6 +493,14 @@ def search_products(
         query = query.where(Product.kategorie == category)
     if dn is not None:
         query = query.where(Product.nennweite_dn == dn)
+    if sn is not None:
+        query = query.where(Product.steifigkeitsklasse_sn == sn)
+    if load_class is not None:
+        query = query.where(Product.belastungsklasse.ilike(f"%{load_class}%"))
+    if material is not None:
+        query = query.where(Product.werkstoff.ilike(f"%{material}%"))
+    if angle is not None:
+        query = query.where(Product.artikelname.ilike(f"%{angle}°%"))
 
     query = query.limit(limit)
     products = list(db.scalars(query))
@@ -443,40 +516,12 @@ def search_products(
             vk_listenpreis_netto=p.vk_listenpreis_netto,
             lager_gesamt=p.lager_gesamt,
             waehrung=p.waehrung,
+            steifigkeitsklasse_sn=p.steifigkeitsklasse_sn,
+            norm_primaer=p.norm_primaer,
+            werkstoff=p.werkstoff,
         )
         for p in products
     ]
-
-
-@router.post("/compatibility-check", response_model=list[CompatibilityIssue])
-def check_compatibility_endpoint(
-    request: CompatibilityCheckRequest,
-    db: Session = Depends(get_db),
-) -> list[CompatibilityIssue]:
-    positions_by_id = {p.id: p for p in request.positions}
-    selected: list[tuple[LVPosition, ProductSuggestion]] = []
-
-    for pos_id, artikel_id in request.selected_article_ids.items():
-        position = positions_by_id.get(pos_id)
-        if not position:
-            continue
-        product = db.scalar(select(Product).where(Product.artikel_id == artikel_id))
-        if not product:
-            continue
-        selected.append((
-            position,
-            ProductSuggestion(
-                artikel_id=product.artikel_id,
-                artikelname=product.artikelname,
-                category=product.kategorie,
-                subcategory=product.unterkategorie,
-                dn=product.nennweite_dn,
-                load_class=product.belastungsklasse,
-                score=0,
-            ),
-        ))
-
-    return check_compatibility(selected)
 
 
 def _project_to_summary(p: LVProject) -> ProjectSummary:
@@ -484,6 +529,7 @@ def _project_to_summary(p: LVProject) -> ProjectSummary:
         id=p.id,
         filename=p.filename,
         project_name=p.project_name,
+        projekt_nr=p.projekt_nr,
         total_positions=p.total_positions,
         billable_positions=p.billable_positions,
         service_positions=p.service_positions,
@@ -517,6 +563,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)) -> ProjectDetail
     if not project:
         raise HTTPException(status_code=404, detail="Projekt nicht gefunden")
     positions = _reconstruct_positions(project.positions)
+    positions = _enrich_from_pdf(positions, project.pdf_path)
     metadata = ProjectMetadata(
         bauvorhaben=project.bauvorhaben,
         objekt_nr=project.objekt_nr,
@@ -791,5 +838,179 @@ def update_inquiry_status(
     inq.status = data.status
     if data.notes is not None:
         inq.notes = data.notes
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/inquiries/batch", response_model=list[InquiryResponse])
+def create_inquiry_batch(data: InquiryBatchCreateRequest, db: Session = Depends(get_db)):
+    """Create inquiries for multiple suppliers at once (without sending emails)."""
+    from ..services.email_service import build_inquiry_email
+
+    project_name = None
+    if data.project_id:
+        project = db.get(LVProject, data.project_id)
+        if project:
+            project_name = project.bauvorhaben or project.project_name
+
+    params_dict = data.technical_params.model_dump(exclude_none=True) if data.technical_params else None
+    subject, body = build_inquiry_email(
+        product_description=data.product_description,
+        project_name=project_name,
+        technical_params=params_dict,
+        quantity=data.quantity,
+        unit=data.unit,
+        custom_message=data.custom_message,
+    )
+
+    results = []
+    for supplier_id in data.supplier_ids:
+        supplier = db.get(Supplier, supplier_id)
+        if not supplier:
+            continue
+        inquiry = SupplierInquiry(
+            supplier_id=supplier.id,
+            project_id=data.project_id,
+            position_id=data.position_id,
+            ordnungszahl=data.ordnungszahl,
+            product_description=data.product_description,
+            technical_params_json=json.dumps(params_dict) if params_dict else None,
+            quantity=data.quantity,
+            unit=data.unit,
+            status="offen",
+            email_subject=subject,
+            email_body=body,
+        )
+        db.add(inquiry)
+        db.flush()
+        results.append(InquiryResponse(
+            id=inquiry.id,
+            supplier_name=supplier.name,
+            supplier_email=supplier.email,
+            project_id=inquiry.project_id,
+            position_id=inquiry.position_id,
+            ordnungszahl=inquiry.ordnungszahl,
+            product_description=inquiry.product_description,
+            quantity=inquiry.quantity,
+            unit=inquiry.unit,
+            status=inquiry.status,
+            sent_at=None,
+            email_subject=inquiry.email_subject,
+            email_body=inquiry.email_body,
+            created_at=inquiry.created_at,
+        ))
+    db.commit()
+    return results
+
+
+@router.post("/inquiries/send-batch", response_model=BatchSendResponse)
+def send_batch_inquiries(data: BatchSendRequest, db: Session = Depends(get_db)):
+    """Send emails for all open inquiries of a project."""
+    from ..services.email_service import send_email
+
+    inquiries = db.execute(
+        select(SupplierInquiry)
+        .where(SupplierInquiry.project_id == data.project_id)
+        .where(SupplierInquiry.status == "offen")
+    ).scalars().all()
+
+    sent_count = 0
+    failed_count = 0
+    for inq in inquiries:
+        supplier = db.get(Supplier, inq.supplier_id)
+        if not supplier or not inq.email_subject or not inq.email_body:
+            failed_count += 1
+            continue
+        success = send_email(supplier.email, inq.email_subject, inq.email_body)
+        if success:
+            inq.status = "angefragt"
+            inq.sent_at = datetime.utcnow()
+            sent_count += 1
+        else:
+            failed_count += 1
+    db.commit()
+    return BatchSendResponse(sent_count=sent_count, failed_count=failed_count)
+
+
+# ──────────────────────────────────────────────────────────────
+#  Objektradar — Ausschreibungen
+# ──────────────────────────────────────────────────────────────
+
+@router.get("/tenders", response_model=list[TenderResponse])
+def list_tenders(
+    status: str | None = None,
+    min_relevance: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Alle gefundenen Ausschreibungen (optional nach Status/Relevanz filtern)."""
+    q = db.query(Tender)
+    if status:
+        q = q.filter(Tender.status == status)
+    if min_relevance > 0:
+        q = q.filter(Tender.relevance_score >= min_relevance)
+    q = q.order_by(Tender.relevance_score.desc(), Tender.created_at.desc())
+    tenders = q.all()
+
+    result = []
+    for t in tenders:
+        cpv = []
+        if t.cpv_codes:
+            try:
+                cpv = json.loads(t.cpv_codes)
+            except (json.JSONDecodeError, TypeError):
+                cpv = []
+        result.append(TenderResponse(
+            id=t.id,
+            external_id=t.external_id,
+            title=t.title,
+            description=t.description,
+            auftraggeber=t.auftraggeber,
+            ort=t.ort,
+            cpv_codes=cpv,
+            submission_deadline=t.submission_deadline,
+            publication_date=t.publication_date,
+            url=t.url,
+            status=t.status,
+            relevance_score=t.relevance_score,
+            lat=t.lat,
+            lng=t.lng,
+            created_at=t.created_at,
+            project_id=t.project_id,
+        ))
+    return result
+
+
+@router.post("/tenders/refresh")
+def refresh_tenders_endpoint():
+    """Manueller Trigger: Neue Ausschreibungen im Hintergrund abrufen."""
+    from ..services.tender_crawler import refresh_tenders_background, get_refresh_status
+    from ..database import SessionLocal
+    status = get_refresh_status()
+    if status["running"]:
+        return {"status": "already_running"}
+    refresh_tenders_background(SessionLocal)
+    return {"status": "started"}
+
+
+@router.get("/tenders/refresh-status")
+def refresh_status_endpoint():
+    """Status des laufenden Refreshs abfragen."""
+    from ..services.tender_crawler import get_refresh_status
+    return get_refresh_status()
+
+
+@router.patch("/tenders/{tender_id}")
+def update_tender_status(
+    tender_id: int,
+    data: TenderStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    """Status einer Ausschreibung ändern (neu/relevant/irrelevant/analysiert)."""
+    tender = db.get(Tender, tender_id)
+    if not tender:
+        raise HTTPException(status_code=404, detail="Ausschreibung nicht gefunden")
+    if data.status not in ("neu", "relevant", "irrelevant", "analysiert"):
+        raise HTTPException(status_code=400, detail="Ungültiger Status")
+    tender.status = data.status
     db.commit()
     return {"ok": True}

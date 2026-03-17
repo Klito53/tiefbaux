@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import ManualOverride, Product
-from ..schemas import LVPosition, ProductSuggestion, ScoreBreakdown
+from ..schemas import ComponentRequirement, LVPosition, ProductSuggestion, ScoreBreakdown, TechnicalParameters
 
 LOAD_RANK = {
     "A15": 1,
@@ -802,3 +802,29 @@ def suggest_products_for_position(
     # Append override suggestions after regular ones
     suggestions.extend(override_suggestions)
     return suggestions
+
+
+def suggest_products_for_component(
+    db: Session,
+    component: ComponentRequirement,
+    products: list[Product],
+    limit: int = 3,
+) -> list[ProductSuggestion]:
+    """Match a single component of a multi-part position by building a synthetic LVPosition."""
+    synthetic = LVPosition(
+        id=f"_comp_{component.component_name}",
+        ordnungszahl="",
+        description=component.component_name,
+        raw_text=component.component_name,
+        quantity=component.quantity,
+        unit="Stk",
+        billable=True,
+        position_type="material",
+        parameters=TechnicalParameters(
+            product_category=component.product_category,
+            product_subcategory=component.product_subcategory,
+            nominal_diameter_dn=component.nominal_diameter_dn,
+            material=component.material,
+        ),
+    )
+    return suggest_products_for_position(db, synthetic, limit=limit, products=products)

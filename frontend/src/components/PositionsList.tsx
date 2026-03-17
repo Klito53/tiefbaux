@@ -10,11 +10,10 @@ type Props = {
   positions: LVPosition[]
   activePositionId: string | null
   onSelectPosition: (id: string) => void
-  selectedArticleIds: Record<string, string>
+  selectedArticleIds: Record<string, string[]>
   suggestionMap: Record<string, ProductSuggestion[]>
   skippedPositionIds: Set<string>
   onToggleSkip: (positionId: string) => void
-  compatibilityIssuePositionIds: Set<string>
   onEnterAssignment?: () => void
 }
 
@@ -32,7 +31,6 @@ export function PositionsList({
   suggestionMap,
   skippedPositionIds,
   onToggleSkip,
-  compatibilityIssuePositionIds,
   onEnterAssignment,
 }: Props) {
   const pageSize = 10
@@ -46,7 +44,7 @@ export function PositionsList({
     if (filterMode !== 'alle') {
       filtered = filtered.filter((p) => {
         const isSkipped = skippedPositionIds.has(p.id)
-        const hasSelection = Boolean(selectedArticleIds[p.id])
+        const hasSelection = (selectedArticleIds[p.id]?.length ?? 0) > 0
         if (filterMode === 'dienstleistung') return isSkipped
         if (isSkipped) return false
         if (filterMode === 'zugeordnet') return hasSelection
@@ -73,7 +71,7 @@ export function PositionsList({
   const pagedPositions = filteredPositions.slice(safePage * pageSize, (safePage + 1) * pageSize)
 
   const assignedCount = useMemo(
-    () => positions.filter((p) => selectedArticleIds[p.id] && !skippedPositionIds.has(p.id)).length,
+    () => positions.filter((p) => (selectedArticleIds[p.id]?.length ?? 0) > 0 && !skippedPositionIds.has(p.id)).length,
     [positions, selectedArticleIds, skippedPositionIds],
   )
   const serviceCount = skippedPositionIds.size
@@ -162,10 +160,9 @@ export function PositionsList({
         {pagedPositions.map((position, index) => {
           const isActive = position.id === activePositionId
           const isSkipped = skippedPositionIds.has(position.id)
-          const hasSelection = Boolean(selectedArticleIds[position.id])
+          const hasSelection = (selectedArticleIds[position.id]?.length ?? 0) > 0
           const hasSuggestions = (suggestionMap[position.id] ?? []).length > 0
           const category = position.parameters.product_category
-          const hasCompatIssue = compatibilityIssuePositionIds.has(position.id)
           const showLoadClass = category ? LOAD_CLASS_CATEGORIES.has(category) : false
 
           let statusClass = 'status-open'
@@ -176,7 +173,7 @@ export function PositionsList({
           return (
             <div
               key={position.id}
-              className={`position-row ${isActive ? 'active' : ''} ${statusClass} ${hasCompatIssue ? 'has-compat-issue' : ''}`}
+              className={`position-row ${isActive ? 'active' : ''} ${statusClass}`}
               style={{ animationDelay: `${index * 30}ms` }}
             >
               <button
@@ -187,13 +184,6 @@ export function PositionsList({
                 <div className="position-head">
                   <span className="position-no">{position.ordnungszahl}</span>
                   <div className="position-badges">
-                    {hasCompatIssue && (
-                      <span className="badge badge-compat" title="Kompatibilitätsproblem">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                          <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </span>
-                    )}
                     {category && <span className="badge badge-category">{category}</span>}
                     {isSkipped ? (
                       <span className="badge badge-service">
@@ -208,9 +198,10 @@ export function PositionsList({
                 </div>
                 <p className="position-desc">{position.description}</p>
                 {hasSelection && (() => {
-                  const selectedArt = (suggestionMap[position.id] ?? []).find(
-                    s => s.artikel_id === selectedArticleIds[position.id]
-                  )
+                  const primaryId = selectedArticleIds[position.id]?.[0]
+                  const selectedArt = primaryId ? (suggestionMap[position.id] ?? []).find(
+                    s => s.artikel_id === primaryId
+                  ) : undefined
                   return selectedArt ? (
                     <div className="position-selected-article">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none">

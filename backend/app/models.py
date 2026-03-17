@@ -79,6 +79,9 @@ class LVProject(Base):
     kunde_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     kunde_adresse: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
+    # Auto-generated project number (P-YYMM-NNN)
+    projekt_nr: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, unique=True)
+
     # Feature 5: Stored article selections for duplicate reuse
     selections_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -145,6 +148,30 @@ class SupplierInquiry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     supplier = relationship("Supplier")
+    project = relationship("LVProject")
+
+
+class Tender(Base):
+    """Objektradar: Öffentliche Ausschreibungen aus Vergabe.NRW."""
+    __tablename__ = "tenders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    external_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auftraggeber: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    ort: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    cpv_codes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list
+    submission_deadline: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    publication_date: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="neu", index=True)
+    relevance_score: Mapped[int] = mapped_column(Integer, default=0)
+    lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    project_id: Mapped[Optional[int]] = mapped_column(ForeignKey("lv_projects.id"), nullable=True)
+
     project = relationship("LVProject")
 
 

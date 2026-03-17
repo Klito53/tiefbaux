@@ -87,12 +87,15 @@ export function ProjectArchive({ onLoadProject }: Props) {
             <div key={project.id} className="archive-row">
               <div className="archive-main">
                 <div className="archive-title-row">
-                  {project.objekt_nr && (
-                    <span className="archive-objnr">{project.objekt_nr}</span>
+                  {project.projekt_nr && (
+                    <span className="archive-objnr">{project.projekt_nr}</span>
                   )}
                   <span className="archive-filename">
                     {project.bauvorhaben ?? project.filename ?? 'Unbenannt'}
                   </span>
+                  {project.objekt_nr && (
+                    <span className="archive-lv-nr">{project.objekt_nr}</span>
+                  )}
                 </div>
                 <div className="archive-meta-row">
                   {project.kunde_name && (

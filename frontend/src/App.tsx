@@ -7,6 +7,7 @@ import { Header } from './components/Header'
 import { PositionsList } from './components/PositionsList'
 import { ProgressOverlay } from './components/ProgressOverlay'
 import { ProjectArchive } from './components/ProjectArchive'
+import { TenderRadar } from './components/TenderRadar'
 import { ProjectHeader } from './components/ProjectHeader'
 import { StatsBar } from './components/StatsBar'
 import { SuggestionsPanel } from './components/SuggestionsPanel'
@@ -27,14 +28,6 @@ function App() {
     }
     prevStepRef.current = analysis.step
   }, [analysis.step])
-
-  const compatibilityIssuePositionIds = useMemo(() => {
-    const ids = new Set<string>()
-    analysis.compatibilityIssues.forEach(issue => {
-      issue.positions.forEach(id => ids.add(id))
-    })
-    return ids
-  }, [analysis.compatibilityIssues])
 
   const handleLoadFromArchive = useCallback((projectId: number) => {
     setActiveView('analysis')
@@ -61,14 +54,25 @@ function App() {
                 selectedArticleIds={analysis.selectedArticleIds}
                 skippedPositionIds={analysis.skippedPositionIds}
                 priceAdjustments={analysis.priceAdjustments}
+                categoryAdjustments={analysis.categoryAdjustments}
                 onAccept={analysis.handleSuggestionSelect}
+                onSwapPrimary={analysis.handleSwapPrimary}
                 onReject={analysis.handleRejectSuggestion}
                 onManualSelect={analysis.handleManualSelect}
+                onAddArticle={analysis.handleAddArticle}
+                onRemoveArticle={analysis.handleRemoveArticle}
                 onPriceAdjustmentChange={analysis.handlePriceAdjustmentChange}
                 onFinish={analysis.handleExportPreview}
                 onBackToOverview={() => setAssignmentMode(false)}
                 projectId={analysis.projectId}
                 projectName={analysis.projectName}
+                alternativeFlags={analysis.alternativeFlags}
+                onToggleAlternative={analysis.handleToggleAlternative}
+                supplierOpenFlags={analysis.supplierOpenFlags}
+                onToggleSupplierOpen={analysis.handleToggleSupplierOpen}
+                positionSuggestions={analysis.positionSuggestions}
+                componentSelections={analysis.componentSelections}
+                onComponentSelect={analysis.handleComponentSelect}
               />
             </>
           ) : (
@@ -93,7 +97,6 @@ function App() {
                 selectedCount={analysis.selectedCount}
                 serviceCount={analysis.serviceCount}
                 estimatedTotal={analysis.estimatedTotal}
-                compatibilityIssues={analysis.compatibilityIssues}
                 step={analysis.step}
                 onAcceptAllTop={analysis.handleAcceptAllTop}
               />
@@ -128,18 +131,16 @@ function App() {
                   suggestionMap={analysis.suggestionMap}
                   skippedPositionIds={analysis.skippedPositionIds}
                   onToggleSkip={analysis.handleToggleSkip}
-                  compatibilityIssuePositionIds={compatibilityIssuePositionIds}
                   onEnterAssignment={hasResults ? () => setAssignmentMode(true) : undefined}
                 />
 
                 <SuggestionsPanel
                   activePosition={analysis.activePosition}
                   suggestions={analysis.activeSuggestions}
-                  selectedArticleId={analysis.activePosition ? analysis.selectedArticleIds[analysis.activePosition.id] : undefined}
+                  selectedArticleIds={analysis.activePosition ? analysis.selectedArticleIds[analysis.activePosition.id] ?? [] : []}
                   priceAdjustment={analysis.activePosition ? analysis.priceAdjustments[analysis.activePosition.id] : undefined}
                   onSelectArticle={analysis.handleSuggestionSelect}
                   onManualSelect={analysis.handleManualSelect}
-                  compatibilityIssues={analysis.compatibilityIssues}
                   onParameterChange={analysis.handleParameterChange}
                   isRefreshingSuggestions={analysis.isRefreshingSuggestions}
                   onPriceAdjustmentChange={analysis.handlePriceAdjustmentChange}
@@ -181,6 +182,8 @@ function App() {
             isExporting={analysis.isExporting}
           />
         </>
+      ) : activeView === 'radar' ? (
+        <TenderRadar />
       ) : (
         <ProjectArchive onLoadProject={handleLoadFromArchive} />
       )}

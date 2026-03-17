@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from ..config import settings
-from ..schemas import LVPosition, TechnicalParameters
+from ..schemas import ComponentRequirement, LVPosition, TechnicalParameters
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,15 @@ def _call_gemini_batch(positions: list[LVPosition]) -> list[dict[str, Any]]:
         "NICHT relevant sind: Stuetzmauern, Fundamente, Bordsteine, Pflaster, Asphalt, Oberboden, "
         "Rasen, Poller, Blockstufen, Zaeune, Beleuchtung, Sand/Kies/Schotter (als Schuettgut), "
         "Hydrantenarmaturen, Hausanschlussgarnituren, reine Einbau-/Montagearbeiten. "
-        "Setze true wenn es ein Handelsprodukt ist, false wenn nicht."
+        "Setze true wenn es ein Handelsprodukt ist, false wenn nicht.\n\n"
+        "components (Array oder null): Falls die Position eine mehrteilige Baugruppe beschreibt "
+        "(z.B. 'Schacht komplett mit Unterteil, 3 Ringen, Konus und Abdeckung' oder "
+        "'Strassenablauf komplett mit Aufsatz, Rost und Anschlussrohr'), "
+        "zerlege in Einzelkomponenten. Jede Komponente ist ein Objekt mit: "
+        "component_name (z.B. 'Schachtunterteil'), product_category, product_subcategory, "
+        "nominal_diameter_dn (Integer oder null), quantity (Integer, z.B. 3 fuer '3 Ringe'), "
+        "material (String oder null). "
+        "Setze null wenn es eine einfache Einzelprodukt-Position ist."
     )
 
     pos_texts = []
@@ -332,11 +340,30 @@ def enrich_positions_with_parameters(positions: list[LVPosition]) -> list[LVPosi
             ai_data = ai_results[i]
             if ai_data and isinstance(ai_data, dict):
                 try:
+                    # Extract components before filtering for TechnicalParameters fields
+                    raw_components = ai_data.pop("components", None)
                     ai_data.setdefault("quantity", position.quantity)
                     ai_data.setdefault("unit", position.unit)
                     ai_params = TechnicalParameters(**{k: v for k, v in ai_data.items() if k in TechnicalParameters.model_fields})
                     merged = interpreted.model_dump()
                     merged.update({k: v for k, v in ai_params.model_dump().items() if v not in (None, "")})
+
+                    # Parse components from Gemini
+                    if raw_components and isinstance(raw_components, list) and len(raw_components) > 1:
+                        components = []
+                        for comp in raw_components:
+                            if isinstance(comp, dict) and comp.get("component_name"):
+                                components.append(ComponentRequirement(
+                                    component_name=comp["component_name"],
+                                    product_category=comp.get("product_category"),
+                                    product_subcategory=comp.get("product_subcategory"),
+                                    nominal_diameter_dn=comp.get("nominal_diameter_dn"),
+                                    quantity=comp.get("quantity", 1),
+                                    material=comp.get("material"),
+                                ))
+                        if len(components) > 1:
+                            merged["components"] = components
+
                     interpreted = TechnicalParameters(**merged)
                 except Exception as exc:
                     logger.warning("Failed to merge AI params for position %s: %s", position.ordnungszahl, exc)

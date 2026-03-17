@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createInquiry, fetchSuppliers } from '../api'
+import { createInquiryBatch, fetchSuppliers } from '../api'
 import type { LVPosition, Supplier } from '../types'
 
 type Props = {
@@ -8,45 +8,52 @@ type Props = {
   position: LVPosition
   projectName?: string | null
   projectId?: number | null
+  productDescription?: string | null
   onSuccess?: () => void
 }
 
-export function InquiryModal({ isOpen, onClose, position, projectName, projectId, onSuccess }: Props) {
+export function InquiryModal({ isOpen, onClose, position, projectName, projectId, productDescription, onSuccess }: Props) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [selectedSupplierId, setSelectedSupplierId] = useState<number | null>(null)
+  const [selectedSupplierIds, setSelectedSupplierIds] = useState<Set<number>>(new Set())
   const [customMessage, setCustomMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
+  const [sentCount, setSentCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (isOpen) {
       setSent(false)
+      setSentCount(0)
       setError(null)
       setCustomMessage('')
+      setSelectedSupplierIds(new Set())
       fetchSuppliers()
         .then((s) => {
           setSuppliers(s)
-          // Auto-select supplier matching position category
+          // Auto-select suppliers matching position category
           const cat = position.parameters.product_category
           if (cat) {
-            const match = s.find((sup) =>
+            const matching = s.filter((sup) =>
               sup.categories.some((c) => c.toLowerCase() === cat.toLowerCase()),
             )
-            if (match) setSelectedSupplierId(match.id)
-            else if (s.length > 0) setSelectedSupplierId(s[0].id)
-          } else if (s.length > 0) {
-            setSelectedSupplierId(s[0].id)
+            if (matching.length > 0) {
+              setSelectedSupplierIds(new Set(matching.map((m) => m.id)))
+            }
           }
         })
         .catch(() => setError('Lieferanten konnten nicht geladen werden'))
     }
   }, [isOpen, position.parameters.product_category])
 
-  const selectedSupplier = useMemo(
-    () => suppliers.find((s) => s.id === selectedSupplierId),
-    [suppliers, selectedSupplierId],
-  )
+  const toggleSupplier = (id: number) => {
+    setSelectedSupplierIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   // Build preview of technical params
   const paramLines = useMemo(() => {
@@ -65,32 +72,36 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
   }, [position.parameters])
 
   async function handleSend() {
-    if (!selectedSupplierId) return
+    if (selectedSupplierIds.size === 0) return
     setSending(true)
     setError(null)
     try {
-      await createInquiry({
-        supplier_id: selectedSupplierId,
+      const results = await createInquiryBatch({
+        supplier_ids: Array.from(selectedSupplierIds),
         project_id: projectId,
         position_id: position.id,
         ordnungszahl: position.ordnungszahl,
-        product_description: position.description,
+        product_description: productDescription || position.description,
         technical_params: position.parameters,
         quantity: position.quantity,
         unit: position.unit,
         custom_message: customMessage || undefined,
-        send_email: true,
       })
+      setSentCount(results.length)
       setSent(true)
       onSuccess?.()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Fehler beim Senden')
+      setError(err instanceof Error ? err.message : 'Fehler beim Erstellen')
     } finally {
       setSending(false)
     }
   }
 
   if (!isOpen) return null
+
+  const selectedSupplierNames = suppliers
+    .filter((s) => selectedSupplierIds.has(s.id))
+    .map((s) => s.name)
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -110,9 +121,10 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
               <circle cx="12" cy="12" r="10" stroke="#16a34a" strokeWidth="1.5" />
               <path d="M8 12l3 3 5-5" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            <h4>Anfrage gesendet</h4>
+            <h4>{sentCount} Anfrage{sentCount !== 1 ? 'n' : ''} vorgemerkt</h4>
             <p>
-              Die Anfrage wurde an <strong>{selectedSupplier?.name}</strong> ({selectedSupplier?.email}) gesendet.
+              Anfragen für <strong>{selectedSupplierNames.join(', ')}</strong> wurden erstellt.
+              Sie können diese über die Projektübersicht gesammelt versenden.
             </p>
             <button className="btn btn-primary inquiry-btn" onClick={onClose}>
               Schließen
@@ -150,33 +162,37 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
                 </div>
               )}
 
-              {/* Supplier selection */}
+              {/* Supplier selection — checkbox list */}
               <div className="inquiry-section">
-                <label className="inquiry-label">Lieferant</label>
-                <select
-                  className="inquiry-select"
-                  value={selectedSupplierId ?? ''}
-                  onChange={(e) => setSelectedSupplierId(Number(e.target.value))}
-                >
+                <label className="inquiry-label">
+                  Lieferanten ({selectedSupplierIds.size} ausgewählt)
+                </label>
+                <div className="inquiry-supplier-list">
                   {suppliers.map((s) => {
                     const isMatch = position.parameters.product_category
                       ? s.categories.some(
                           (c) => c.toLowerCase() === position.parameters.product_category!.toLowerCase(),
                         )
                       : false
+                    const checked = selectedSupplierIds.has(s.id)
                     return (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.email}){isMatch ? ' — passend' : ''}
-                      </option>
+                      <label key={s.id} className={`inquiry-supplier-item ${checked ? 'checked' : ''} ${isMatch ? 'matching' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSupplier(s.id)}
+                        />
+                        <div className="inquiry-supplier-detail">
+                          <span className="inquiry-supplier-name">
+                            {s.name}
+                            {isMatch && <span className="inquiry-match-badge">passend</span>}
+                          </span>
+                          <span className="inquiry-supplier-email">{s.email}</span>
+                        </div>
+                      </label>
                     )
                   })}
-                </select>
-                {selectedSupplier && (
-                  <div className="inquiry-supplier-info">
-                    <span>{selectedSupplier.email}</span>
-                    {selectedSupplier.phone && <span> | {selectedSupplier.phone}</span>}
-                  </div>
-                )}
+                </div>
               </div>
 
               {/* Custom message */}
@@ -209,19 +225,21 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
               <button
                 className="btn btn-primary inquiry-btn btn-send"
                 onClick={handleSend}
-                disabled={!selectedSupplierId || sending}
+                disabled={selectedSupplierIds.size === 0 || sending}
               >
                 {sending ? (
                   <>
                     <span className="spinner-small" />
-                    Wird gesendet...
+                    Wird erstellt...
                   </>
                 ) : (
                   <>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                       <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
-                    Anfrage senden
+                    {selectedSupplierIds.size > 1
+                      ? `${selectedSupplierIds.size} Anfragen vormerken`
+                      : 'Anfrage vormerken'}
                   </>
                 )}
               </button>

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CompatibilityIssue, LVPosition, PriceAdjustment, ProductSearchResult, ProductSuggestion, TechnicalParameters } from '../types'
+import type { LVPosition, PriceAdjustment, ProductSearchResult, ProductSuggestion, TechnicalParameters } from '../types'
 import { DinBadge } from './DinBadge'
 import { InquiryModal } from './InquiryModal'
 import { ParameterEditor } from './ParameterEditor'
@@ -34,11 +34,10 @@ function extractSnFromText(text: string): number | null {
 type Props = {
   activePosition: LVPosition | null
   suggestions: ProductSuggestion[]
-  selectedArticleId: string | undefined
+  selectedArticleIds: string[]
   priceAdjustment?: PriceAdjustment
   onSelectArticle: (positionId: string, artikelId: string) => void
   onManualSelect: (positionId: string, product: ProductSearchResult) => void
-  compatibilityIssues: CompatibilityIssue[]
   onParameterChange: (positionId: string, params: Partial<TechnicalParameters>) => void
   isRefreshingSuggestions: boolean
   onPriceAdjustmentChange: (positionId: string, adjustment: PriceAdjustment) => void
@@ -70,11 +69,10 @@ function stockStatus(stock?: number | null): { label: string; className: string 
 export function SuggestionsPanel({
   activePosition,
   suggestions,
-  selectedArticleId,
+  selectedArticleIds,
   priceAdjustment,
   onSelectArticle,
   onManualSelect,
-  compatibilityIssues,
   onParameterChange,
   isRefreshingSuggestions,
   projectId,
@@ -88,6 +86,7 @@ export function SuggestionsPanel({
   const posId = activePosition?.id ?? ''
   const dismissed = dismissedIds[posId] ?? new Set()
   const visibleSuggestions = suggestions.filter(s => !dismissed.has(s.artikel_id))
+  const selectedArticleId = selectedArticleIds[0]
   const selectedSuggestion = suggestions.find((s) => s.artikel_id === selectedArticleId) ?? visibleSuggestions[0] ?? null
   const adjustedSelectedUnitPrice = computeAdjustedUnitPrice(selectedSuggestion?.price_net, priceAdjustment)
   const adjustedSelectedTotal = computeAdjustedTotal(adjustedSelectedUnitPrice, activePosition?.quantity)
@@ -102,7 +101,7 @@ export function SuggestionsPanel({
       current.add(artikelId)
       return { ...prev, [posId]: current }
     })
-    if (selectedArticleId === artikelId) {
+    if (selectedArticleIds.includes(artikelId)) {
       const next = visibleSuggestions.find(s => s.artikel_id !== artikelId)
       if (next) onSelectArticle(activePosition.id, next.artikel_id)
     }
@@ -175,7 +174,7 @@ export function SuggestionsPanel({
       <div className="suggestions-list">
         {activePosition &&
           visibleSuggestions.map((suggestion, idx) => {
-            const isSelected = selectedArticleId === suggestion.artikel_id
+            const isSelected = selectedArticleIds.includes(suggestion.artikel_id)
             const stock = stockStatus(suggestion.stock)
             const isBest = idx === 0 && !suggestion.is_manual && !suggestion.is_override
             const hasWarnings = suggestion.warnings.length > 0
@@ -362,27 +361,6 @@ export function SuggestionsPanel({
               </div>
             )
           })}
-      </div>
-
-      <div className="compatibility-box">
-        <h3>Regelengine</h3>
-        {compatibilityIssues.length === 0 && <p className="compat-ok">Keine Konflikte erkannt.</p>}
-        {compatibilityIssues.map((issue) => (
-          <div
-            key={`${issue.rule}-${issue.message}`}
-            className={`issue-item ${issue.severity === 'KRITISCH' ? 'critical' : 'warning'} ${
-              activePosition && issue.positions.includes(activePosition.id) ? 'issue-active' : ''
-            }`}
-          >
-            <div className="issue-header">
-              <span className={`issue-severity ${issue.severity === 'KRITISCH' ? 'sev-critical' : 'sev-warning'}`}>
-                {issue.severity}
-              </span>
-              <span className="issue-rule">{issue.rule}</span>
-            </div>
-            <p>{issue.message}</p>
-          </div>
-        ))}
       </div>
 
       {activePosition && (

@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ApiError, checkCompatibility, exportOffer, fetchExportPreview, fetchProject, fetchSingleSuggestions, fetchSuggestions, parseLV, recordOverride, saveSelections } from '../api'
+import { ApiError, exportOffer, fetchExportPreview, fetchProject, fetchSingleSuggestions, fetchSuggestions, parseLV, recordOverride, saveSelections } from '../api'
 import type {
   AnalysisStep,
-  CompatibilityIssue,
   DuplicateInfo,
   ExportPreviewResponse,
   LVPosition,
@@ -20,8 +19,7 @@ export function useAnalysis() {
   const [file, setFile] = useState<File | null>(null)
   const [positions, setPositions] = useState<LVPosition[]>([])
   const [positionSuggestions, setPositionSuggestions] = useState<PositionSuggestions[]>([])
-  const [selectedArticleIds, setSelectedArticleIds] = useState<Record<string, string>>({})
-  const [compatibilityIssues, setCompatibilityIssues] = useState<CompatibilityIssue[]>([])
+  const [selectedArticleIds, setSelectedArticleIds] = useState<Record<string, string[]>>({})
   const [activePositionId, setActivePositionId] = useState<string | null>(null)
   const [customerName, setCustomerName] = useState('')
   const [projectName, setProjectName] = useState('')
@@ -39,9 +37,13 @@ export function useAnalysis() {
   const [projectId, setProjectId] = useState<number | null>(null)
   const [showPdfViewer, setShowPdfViewer] = useState(false)
   const [priceAdjustments, setPriceAdjustments] = useState<Record<string, PriceAdjustment>>({})
+  const [categoryAdjustments, setCategoryAdjustments] = useState<Record<string, PriceAdjustment>>({})
+  const [alternativeFlags, setAlternativeFlags] = useState<Record<string, boolean>>({})
+  const [supplierOpenFlags, setSupplierOpenFlags] = useState<Record<string, boolean>>({})
+  // Component selections: key = `${positionId}::${componentName}`, value = artikel_id
+  const [componentSelections, setComponentSelections] = useState<Record<string, string>>({})
 
   const abortRef = useRef<AbortController | null>(null)
-  const compatTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Auto-fill customer/project from metadata
@@ -72,7 +74,16 @@ export function useAnalysis() {
 
   const activeSuggestions = activePosition ? suggestionMap[activePosition.id] ?? [] : []
 
-  const selectedCount = useMemo(() => Object.keys(selectedArticleIds).length, [selectedArticleIds])
+  const selectedCount = useMemo(() => {
+    const regularCount = Object.values(selectedArticleIds).filter(ids => ids.length > 0).length
+    // Count positions that have component selections but no regular selection
+    const componentPositionIds = new Set<string>()
+    for (const key of Object.keys(componentSelections)) {
+      const [posId] = key.split('::')
+      if (!selectedArticleIds[posId]?.length) componentPositionIds.add(posId)
+    }
+    return regularCount + componentPositionIds.size
+  }, [selectedArticleIds, componentSelections])
 
   const matchedCount = useMemo(() => {
     return positionSuggestions.filter((ps) => ps.suggestions.length > 0).length
@@ -82,25 +93,30 @@ export function useAnalysis() {
 
   const estimatedTotal = useMemo(() => {
     let total = 0
-    for (const [posId, artId] of Object.entries(selectedArticleIds)) {
+    for (const [posId, artIds] of Object.entries(selectedArticleIds)) {
       if (skippedPositionIds.has(posId)) continue
       const suggestions = suggestionMap[posId]
       if (!suggestions) continue
-      const match = suggestions.find((s) => s.artikel_id === artId)
       const position = positions.find((p) => p.id === posId)
-      const adjustedUnitPrice = computeAdjustedUnitPrice(match?.price_net, priceAdjustments[posId])
-      const adjustedTotal = computeAdjustedTotal(adjustedUnitPrice, position?.quantity)
-      if (adjustedTotal != null) total += adjustedTotal
+      for (let i = 0; i < artIds.length; i++) {
+        const match = suggestions.find((s) => s.artikel_id === artIds[i])
+        // Price adjustments only apply to primary article
+        const unitPrice = i === 0
+          ? computeAdjustedUnitPrice(match?.price_net, priceAdjustments[posId])
+          : match?.price_net ?? null
+        const artTotal = computeAdjustedTotal(unitPrice, position?.quantity)
+        if (artTotal != null) total += artTotal
+      }
     }
     return total
   }, [selectedArticleIds, suggestionMap, skippedPositionIds, positions, priceAdjustments])
 
   const customUnitPrices = useMemo(() => {
     const prices: Record<string, number> = {}
-    for (const [posId, artId] of Object.entries(selectedArticleIds)) {
-      if (skippedPositionIds.has(posId)) continue
+    for (const [posId, artIds] of Object.entries(selectedArticleIds)) {
+      if (skippedPositionIds.has(posId) || artIds.length === 0) continue
       const suggestions = suggestionMap[posId]
-      const match = suggestions?.find((s) => s.artikel_id === artId)
+      const match = suggestions?.find((s) => s.artikel_id === artIds[0])
       const adjustedUnitPrice = computeAdjustedUnitPrice(match?.price_net, priceAdjustments[posId])
       if (isAdjustedPrice(match?.price_net, adjustedUnitPrice) && adjustedUnitPrice != null) {
         prices[posId] = adjustedUnitPrice
@@ -111,7 +127,44 @@ export function useAnalysis() {
 
   const handlePriceAdjustmentChange = useCallback((positionId: string, adjustment: PriceAdjustment) => {
     setPriceAdjustments((prev) => ({ ...prev, [positionId]: adjustment }))
+    // Remember adjustment per product category for auto-fill
+    const posSuggestions = positionSuggestions.find(ps => ps.position_id === positionId)
+    const primaryCategory = posSuggestions?.suggestions[0]?.category
+    if (primaryCategory) {
+      setCategoryAdjustments(prev => ({ ...prev, [primaryCategory]: adjustment }))
+    }
+  }, [positionSuggestions])
+
+  const handleToggleAlternative = useCallback((positionId: string) => {
+    setAlternativeFlags(prev => ({ ...prev, [positionId]: !prev[positionId] }))
   }, [])
+
+  const handleToggleSupplierOpen = useCallback((positionId: string) => {
+    setSupplierOpenFlags(prev => ({ ...prev, [positionId]: !prev[positionId] }))
+  }, [])
+
+  const handleComponentSelect = useCallback((positionId: string, componentName: string, artikelId: string) => {
+    const key = `${positionId}::${componentName}`
+    setComponentSelections(prev => ({ ...prev, [key]: artikelId }))
+  }, [])
+
+  /** Auto-detect if a product deviates from position requirements */
+  const autoDetectAlternative = useCallback((positionId: string, suggestion: ProductSuggestion) => {
+    const position = positions.find(p => p.id === positionId)
+    if (!position) return
+
+    const reqDn = position.parameters.nominal_diameter_dn
+    const reqSn = position.parameters.stiffness_class_sn
+
+    let isDeviation = false
+    if (reqDn != null && suggestion.dn != null && reqDn !== suggestion.dn) isDeviation = true
+    if (reqSn != null && suggestion.sn != null && suggestion.sn < reqSn) isDeviation = true
+
+    if (isDeviation) {
+      setAlternativeFlags(prev => ({ ...prev, [positionId]: true }))
+      showToast('Als Alternative zur bauseitigen Prüfung markiert')
+    }
+  }, [positions, showToast])
 
   const handleAnalyze = useCallback(async () => {
     if (!file) {
@@ -129,6 +182,9 @@ export function useAnalysis() {
     setStep('uploading')
     setUndoStack([])
     setPriceAdjustments({})
+    setCategoryAdjustments({})
+    setSupplierOpenFlags({})
+    setComponentSelections({})
     metadataAppliedRef.current = false
 
     try {
@@ -159,15 +215,23 @@ export function useAnalysis() {
       setStep('matching')
       const suggestionData = await fetchSuggestions(parseData.positions, controller.signal)
       setPositionSuggestions(suggestionData.suggestions)
-      setCompatibilityIssues(suggestionData.compatibility_issues)
 
-      const defaults: Record<string, string> = {}
+      const defaults: Record<string, string[]> = {}
+      const compDefaults: Record<string, string> = {}
       suggestionData.suggestions.forEach((entry) => {
         if (entry.suggestions.length > 0) {
-          defaults[entry.position_id] = entry.suggestions[0].artikel_id
+          defaults[entry.position_id] = [entry.suggestions[0].artikel_id]
+        }
+        if (entry.component_suggestions) {
+          for (const cs of entry.component_suggestions) {
+            if (cs.suggestions.length > 0) {
+              compDefaults[`${entry.position_id}::${cs.component_name}`] = cs.suggestions[0].artikel_id
+            }
+          }
         }
       })
       setSelectedArticleIds(defaults)
+      setComponentSelections(compDefaults)
       setStep('done')
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -188,29 +252,23 @@ export function useAnalysis() {
     abortRef.current?.abort()
   }, [])
 
-  const recheckCompatibility = useCallback((
-    positionsToCheck: LVPosition[],
-    selections: Record<string, string>,
-  ) => {
-    if (compatTimerRef.current) clearTimeout(compatTimerRef.current)
-    compatTimerRef.current = setTimeout(async () => {
-      try {
-        const issues = await checkCompatibility(positionsToCheck, selections)
-        setCompatibilityIssues(issues)
-      } catch {
-        // keep current issues on error
-      }
-    }, 500)
+  /** Swap only the primary (first) article, keeping additional articles intact */
+  const handleSwapPrimary = useCallback((positionId: string, artikelId: string) => {
+    setSelectedArticleIds((current) => {
+      const prev = current[positionId] ?? []
+      const additional = prev.slice(1) // keep additional articles
+      if (prev[0] === artikelId) return current // no change needed
+      return { ...current, [positionId]: [artikelId, ...additional] }
+    })
   }, [])
 
   const handleSuggestionSelect = useCallback((positionId: string, artikelId: string) => {
     setSelectedArticleIds((current) => {
       const prev = current[positionId]
-      pushUndo({ type: 'select', positionId, previousArticleId: prev })
-      const next = { ...current, [positionId]: artikelId }
-      recheckCompatibility(positions, next)
+      pushUndo({ type: 'select', positionId, previousArticleIds: prev })
+      const next = { ...current, [positionId]: [artikelId] }
 
-      // Feature 6: Record override if user chose a non-top suggestion
+      // Record override if user chose a non-top suggestion
       const posSuggestions = positionSuggestions.find(ps => ps.position_id === positionId)
       const topSuggestion = posSuggestions?.suggestions[0]
       if (topSuggestion && topSuggestion.artikel_id !== artikelId && !topSuggestion.is_override) {
@@ -227,9 +285,14 @@ export function useAnalysis() {
         }
       }
 
+      // Auto-detect alternative
+      const selected = positionSuggestions.find(ps => ps.position_id === positionId)
+        ?.suggestions.find(s => s.artikel_id === artikelId)
+      if (selected) autoDetectAlternative(positionId, selected)
+
       return next
     })
-  }, [positions, positionSuggestions, recheckCompatibility, pushUndo])
+  }, [positions, positionSuggestions, pushUndo, autoDetectAlternative])
 
   const handleManualSelect = useCallback((positionId: string, product: ProductSearchResult) => {
     const position = positions.find(p => p.id === positionId)
@@ -244,8 +307,9 @@ export function useAnalysis() {
       category: product.kategorie ?? null,
       subcategory: null,
       dn: product.nennweite_dn ?? null,
+      sn: product.steifigkeitsklasse_sn != null ? parseFloat(String(product.steifigkeitsklasse_sn)) || null : null,
       load_class: product.belastungsklasse ?? null,
-      norm: null,
+      norm: product.norm_primaer ?? null,
       stock: product.lager_gesamt ?? null,
       delivery_days: null,
       price_net: unitPrice,
@@ -258,17 +322,22 @@ export function useAnalysis() {
       is_manual: true,
     }
 
-    setPositionSuggestions(prev => prev.map(ps => {
-      if (ps.position_id !== positionId) return ps
-      const filtered = ps.suggestions.filter(s => !s.is_manual)
-      return { ...ps, suggestions: [syntheticSuggestion, ...filtered] }
-    }))
+    setPositionSuggestions(prev => {
+      const hasEntry = prev.some(ps => ps.position_id === positionId)
+      if (!hasEntry) {
+        return [...prev, { position_id: positionId, suggestions: [syntheticSuggestion] }]
+      }
+      return prev.map(ps => {
+        if (ps.position_id !== positionId) return ps
+        const filtered = ps.suggestions.filter(s => !s.is_manual)
+        return { ...ps, suggestions: [syntheticSuggestion, ...filtered] }
+      })
+    })
 
     setSelectedArticleIds(current => {
       const prev = current[positionId]
-      pushUndo({ type: 'select', positionId, previousArticleId: prev })
-      const next = { ...current, [positionId]: product.artikel_id }
-      recheckCompatibility(positions, next)
+      pushUndo({ type: 'select', positionId, previousArticleIds: prev })
+      const next = { ...current, [positionId]: [product.artikel_id] }
       return next
     })
 
@@ -283,7 +352,73 @@ export function useAnalysis() {
         chosen_artikel_id: product.artikel_id,
       }).catch(() => {})
     }
-  }, [positions, recheckCompatibility, pushUndo])
+
+    // Auto-detect alternative
+    autoDetectAlternative(positionId, syntheticSuggestion)
+  }, [positions, pushUndo, autoDetectAlternative])
+
+  const handleAddArticle = useCallback((positionId: string, product: ProductSearchResult) => {
+    const position = positions.find(p => p.id === positionId)
+    const qty = position?.quantity ?? 1
+    const unitPrice = product.vk_listenpreis_netto ?? null
+    const totalNet = unitPrice != null ? Math.round(unitPrice * qty * 100) / 100 : null
+
+    const syntheticSuggestion: ProductSuggestion = {
+      artikel_id: product.artikel_id,
+      artikelname: product.artikelname,
+      hersteller: product.hersteller ?? null,
+      category: product.kategorie ?? null,
+      subcategory: null,
+      dn: product.nennweite_dn ?? null,
+      sn: product.steifigkeitsklasse_sn != null ? parseFloat(String(product.steifigkeitsklasse_sn)) || null : null,
+      load_class: product.belastungsklasse ?? null,
+      norm: product.norm_primaer ?? null,
+      stock: product.lager_gesamt ?? null,
+      delivery_days: null,
+      price_net: unitPrice,
+      total_net: totalNet,
+      currency: product.waehrung ?? 'EUR',
+      score: 0,
+      reasons: ['Zusatzartikel'],
+      warnings: [],
+      score_breakdown: [],
+      is_manual: true,
+    }
+
+    setPositionSuggestions(prev => {
+      const hasEntry = prev.some(ps => ps.position_id === positionId)
+      if (!hasEntry) {
+        // Position has no suggestions entry yet — create one
+        return [...prev, { position_id: positionId, suggestions: [syntheticSuggestion] }]
+      }
+      return prev.map(ps => {
+        if (ps.position_id !== positionId) return ps
+        // Only add if not already in suggestions
+        if (ps.suggestions.some(s => s.artikel_id === product.artikel_id)) return ps
+        return { ...ps, suggestions: [...ps.suggestions, syntheticSuggestion] }
+      })
+    })
+
+    setSelectedArticleIds(current => {
+      const prev = current[positionId] ?? []
+      if (prev.includes(product.artikel_id)) return current
+      pushUndo({ type: 'select', positionId, previousArticleIds: prev })
+      const next = { ...current, [positionId]: [...prev, product.artikel_id] }
+      return next
+    })
+
+    showToast('Zusatzartikel hinzugefügt')
+  }, [positions, pushUndo, showToast])
+
+  const handleRemoveArticle = useCallback((positionId: string, artikelId: string) => {
+    setSelectedArticleIds(current => {
+      const prev = current[positionId] ?? []
+      pushUndo({ type: 'select', positionId, previousArticleIds: prev })
+      const next = { ...current, [positionId]: prev.filter(id => id !== artikelId) }
+      if (next[positionId].length === 0) delete next[positionId]
+      return next
+    })
+  }, [positions, pushUndo])
 
   const handleToggleSkip = useCallback((positionId: string) => {
     setSkippedPositionIds((prev) => {
@@ -310,19 +445,17 @@ export function useAnalysis() {
         case 'select':
           setSelectedArticleIds(current => {
             const next = { ...current }
-            if (action.previousArticleId) {
-              next[action.positionId] = action.previousArticleId
+            if (action.previousArticleIds && action.previousArticleIds.length > 0) {
+              next[action.positionId] = action.previousArticleIds
             } else {
               delete next[action.positionId]
             }
-            recheckCompatibility(positions, next)
             return next
           })
           break
         case 'deselect':
           setSelectedArticleIds(current => {
-            const next = { ...current, [action.positionId]: action.previousArticleId }
-            recheckCompatibility(positions, next)
+            const next = { ...current, [action.positionId]: action.previousArticleIds }
             return next
           })
           break
@@ -345,7 +478,7 @@ export function useAnalysis() {
       showToast('Rückgängig gemacht')
       return rest
     })
-  }, [positions, recheckCompatibility, showToast])
+  }, [positions, showToast])
 
   // Ctrl+Z handler
   useEffect(() => {
@@ -379,15 +512,13 @@ export function useAnalysis() {
       )
       if (result.suggestions.length > 0) {
         setSelectedArticleIds((prev) => {
-          const next = { ...prev, [positionId]: result.suggestions[0].artikel_id }
-          recheckCompatibility(updatedPositions, next)
+          const next = { ...prev, [positionId]: [result.suggestions[0].artikel_id] }
           return next
         })
       } else {
         setSelectedArticleIds((prev) => {
           const next = { ...prev }
           delete next[positionId]
-          recheckCompatibility(updatedPositions, next)
           return next
         })
       }
@@ -396,7 +527,27 @@ export function useAnalysis() {
     } finally {
       setIsRefreshingSuggestions(false)
     }
-  }, [positions, recheckCompatibility])
+  }, [positions])
+
+  /** Build active selections including component selections for multi-component positions */
+  const buildActiveSelections = useCallback(() => {
+    const activeSelections: Record<string, string[]> = {}
+    for (const [posId, artIds] of Object.entries(selectedArticleIds)) {
+      if (!skippedPositionIds.has(posId) && artIds.length > 0) {
+        activeSelections[posId] = artIds
+      }
+    }
+    // Merge component selections: each component article becomes an additional entry
+    for (const [key, artikelId] of Object.entries(componentSelections)) {
+      const [posId] = key.split('::')
+      if (skippedPositionIds.has(posId)) continue
+      if (!activeSelections[posId]) activeSelections[posId] = []
+      if (!activeSelections[posId].includes(artikelId)) {
+        activeSelections[posId].push(artikelId)
+      }
+    }
+    return activeSelections
+  }, [selectedArticleIds, skippedPositionIds, componentSelections])
 
   const handleExportPreview = useCallback(async () => {
     if (positions.length === 0 || selectedCount === 0) {
@@ -407,15 +558,10 @@ export function useAnalysis() {
     setIsExporting(true)
     setErrorText(null)
 
-    const activeSelections: Record<string, string> = {}
-    for (const [posId, artId] of Object.entries(selectedArticleIds)) {
-      if (!skippedPositionIds.has(posId)) {
-        activeSelections[posId] = artId
-      }
-    }
+    const activeSelections = buildActiveSelections()
 
     try {
-      const preview = await fetchExportPreview(positions, activeSelections, customerName, projectName, customUnitPrices)
+      const preview = await fetchExportPreview(positions, activeSelections, customerName, projectName, customUnitPrices, alternativeFlags, supplierOpenFlags)
       setExportPreview(preview)
       setShowExportDialog(true)
     } catch (error) {
@@ -424,7 +570,7 @@ export function useAnalysis() {
     } finally {
       setIsExporting(false)
     }
-  }, [positions, selectedArticleIds, selectedCount, customerName, projectName, skippedPositionIds, customUnitPrices])
+  }, [positions, selectedCount, customerName, projectName, customUnitPrices, alternativeFlags, supplierOpenFlags, buildActiveSelections])
 
   const handleExportConfirm = useCallback(async () => {
     if (isExporting) return
@@ -432,15 +578,10 @@ export function useAnalysis() {
     setIsExporting(true)
     setErrorText(null)
 
-    const activeSelections: Record<string, string> = {}
-    for (const [posId, artId] of Object.entries(selectedArticleIds)) {
-      if (!skippedPositionIds.has(posId)) {
-        activeSelections[posId] = artId
-      }
-    }
+    const activeSelections = buildActiveSelections()
 
     try {
-      const blob = await exportOffer(positions, activeSelections, customerName, projectName, customUnitPrices)
+      const blob = await exportOffer(positions, activeSelections, customerName, projectName, customUnitPrices, alternativeFlags, supplierOpenFlags)
       const url = window.URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
@@ -458,22 +599,21 @@ export function useAnalysis() {
     } finally {
       setIsExporting(false)
     }
-  }, [positions, selectedArticleIds, customerName, projectName, skippedPositionIds, isExporting, projectId, customUnitPrices])
+  }, [positions, customerName, projectName, isExporting, projectId, customUnitPrices, alternativeFlags, supplierOpenFlags, buildActiveSelections])
 
   const handleExportCancel = useCallback(() => {
     setShowExportDialog(false)
   }, [])
 
   const handleAcceptAllTop = useCallback(() => {
-    const defaults: Record<string, string> = {}
+    const defaults: Record<string, string[]> = {}
     positionSuggestions.forEach((entry) => {
       if (entry.suggestions.length > 0 && !skippedPositionIds.has(entry.position_id)) {
-        defaults[entry.position_id] = entry.suggestions[0].artikel_id
+        defaults[entry.position_id] = [entry.suggestions[0].artikel_id]
       }
     })
     setSelectedArticleIds(defaults)
-    recheckCompatibility(positions, defaults)
-  }, [positionSuggestions, skippedPositionIds, positions, recheckCompatibility])
+  }, [positionSuggestions, skippedPositionIds])
 
   const handleLoadProject = useCallback(async (loadProjectId: number) => {
     abortRef.current?.abort()
@@ -486,6 +626,9 @@ export function useAnalysis() {
     setDuplicateInfo(null)
     setUndoStack([])
     setPriceAdjustments({})
+    setCategoryAdjustments({})
+    setSupplierOpenFlags({})
+    setComponentSelections({})
     setStep('matching')
     metadataAppliedRef.current = false
 
@@ -511,16 +654,28 @@ export function useAnalysis() {
 
       const suggestionData = await fetchSuggestions(loadedPositions, controller.signal)
       setPositionSuggestions(suggestionData.suggestions)
-      setCompatibilityIssues(suggestionData.compatibility_issues)
 
-      // Feature 5: Use stored selections if available, otherwise default to top suggestions
+      // Auto-default component selections
+      const compDefaults: Record<string, string> = {}
+      suggestionData.suggestions.forEach((entry) => {
+        if (entry.component_suggestions) {
+          for (const cs of entry.component_suggestions) {
+            if (cs.suggestions.length > 0) {
+              compDefaults[`${entry.position_id}::${cs.component_name}`] = cs.suggestions[0].artikel_id
+            }
+          }
+        }
+      })
+      setComponentSelections(compDefaults)
+
+      // Use stored selections if available, otherwise default to top suggestions
       if (selections && Object.keys(selections).length > 0) {
         setSelectedArticleIds(selections)
       } else {
-        const defaults: Record<string, string> = {}
+        const defaults: Record<string, string[]> = {}
         suggestionData.suggestions.forEach((entry) => {
           if (entry.suggestions.length > 0) {
-            defaults[entry.position_id] = entry.suggestions[0].artikel_id
+            defaults[entry.position_id] = [entry.suggestions[0].artikel_id]
           }
         })
         setSelectedArticleIds(defaults)
@@ -543,15 +698,14 @@ export function useAnalysis() {
   const handleRejectSuggestion = useCallback((positionId: string) => {
     setSelectedArticleIds((current) => {
       const prev = current[positionId]
-      if (prev) {
-        pushUndo({ type: 'deselect', positionId, previousArticleId: prev })
+      if (prev && prev.length > 0) {
+        pushUndo({ type: 'deselect', positionId, previousArticleIds: prev })
       }
       const next = { ...current }
       delete next[positionId]
-      recheckCompatibility(positions, next)
       return next
     })
-  }, [positions, recheckCompatibility, pushUndo])
+  }, [pushUndo])
 
   const handleReset = useCallback(() => {
     abortRef.current?.abort()
@@ -559,7 +713,6 @@ export function useAnalysis() {
     setPositions([])
     setPositionSuggestions([])
     setSelectedArticleIds({})
-    setCompatibilityIssues([])
     setActivePositionId(null)
     setSkippedPositionIds(new Set())
     setExportPreview(null)
@@ -570,6 +723,10 @@ export function useAnalysis() {
     setProjectId(null)
     setShowPdfViewer(false)
     setPriceAdjustments({})
+    setCategoryAdjustments({})
+    setSupplierOpenFlags({})
+    setComponentSelections({})
+    setAlternativeFlags({})
     setStep('idle')
     setErrorText(null)
   }, [])
@@ -579,7 +736,6 @@ export function useAnalysis() {
     positions,
     positionSuggestions,
     selectedArticleIds,
-    compatibilityIssues,
     activePositionId, setActivePositionId,
     activePosition,
     activeSuggestions,
@@ -604,10 +760,12 @@ export function useAnalysis() {
     projectId,
     showPdfViewer, setShowPdfViewer,
     priceAdjustments,
+    categoryAdjustments,
     customUnitPrices,
     handleAnalyze,
     handleCancel,
     handleSuggestionSelect,
+    handleSwapPrimary,
     handleManualSelect,
     handleToggleSkip,
     handleParameterChange,
@@ -620,5 +778,13 @@ export function useAnalysis() {
     handleUndo,
     handleRejectSuggestion,
     handlePriceAdjustmentChange,
+    handleAddArticle,
+    handleRemoveArticle,
+    alternativeFlags,
+    handleToggleAlternative,
+    supplierOpenFlags,
+    handleToggleSupplierOpen,
+    componentSelections,
+    handleComponentSelect,
   }
 }

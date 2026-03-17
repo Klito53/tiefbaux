@@ -312,20 +312,39 @@ def build_offer_pdf(lines: list[OfferLine], metadata: ExportOfferMetadata) -> by
 
     row_idx = 1
     for line in lines:
-        desc_text = line.description[:120]
-        artikel_text = f"{line.artikelname}"
-        if line.hersteller:
-            artikel_text += f"<br/><font size='6' color='#64748B'>{line.hersteller}</font>"
-        artikel_text += f"<br/><font size='6' color='#94A3B8'>{line.artikel_id}</font>"
+        if line.is_additional:
+            # Sub-row for additional article: indent with "+"
+            artikel_text = f"<font color='#475569'>+ {line.artikelname}</font>"
+            if line.hersteller:
+                artikel_text += f"<br/><font size='6' color='#64748B'>{line.hersteller}</font>"
+            artikel_text += f"<br/><font size='6' color='#94A3B8'>{line.artikel_id}</font>"
 
-        table_data.append([
-            line.ordnungszahl,
-            Paragraph(desc_text, styles["body"]),
-            Paragraph(artikel_text, styles["body"]),
-            f"{_fmt_qty(line.quantity)} {line.unit}",
-            _fmt_money(line.price_net),
-            _fmt_money(line.total_net),
-        ])
+            table_data.append([
+                "",
+                Paragraph("<font color='#64748B'>Zusatzartikel</font>", styles["body_small"]),
+                Paragraph(artikel_text, styles["body"]),
+                f"{_fmt_qty(line.quantity)} {line.unit}",
+                _fmt_money(line.price_net),
+                _fmt_money(line.total_net),
+            ])
+        else:
+            desc_text = line.description[:120]
+            alt_suffix = " *" if line.is_alternative else ""
+            artikel_text = f"{line.artikelname}{alt_suffix}"
+            if line.hersteller:
+                artikel_text += f"<br/><font size='6' color='#64748B'>{line.hersteller}</font>"
+            artikel_text += f"<br/><font size='6' color='#94A3B8'>{line.artikel_id}</font>"
+            if line.supplier_open:
+                artikel_text += "<br/><font size='6' color='#CA8A04'>Lieferant offen</font>"
+
+            table_data.append([
+                line.ordnungszahl,
+                Paragraph(desc_text, styles["body"]),
+                Paragraph(artikel_text, styles["body"]),
+                f"{_fmt_qty(line.quantity)} {line.unit}",
+                _fmt_money(line.price_net),
+                _fmt_money(line.total_net),
+            ])
         if (row_idx - 1) % 2 == 0:
             table_styles_list.append(("BACKGROUND", (0, row_idx), (-1, row_idx), ROW_ALT))
         table_styles_list.append(("ALIGN", (3, row_idx), (-1, row_idx), "RIGHT"))
@@ -366,7 +385,20 @@ def build_offer_pdf(lines: list[OfferLine], metadata: ExportOfferMetadata) -> by
         ])
     )
     story.append(totals_table)
-    story.append(Spacer(1, 12 * mm))
+    story.append(Spacer(1, 8 * mm))
+
+    # ── Alternative footnote ───
+    has_alternatives = any(line.is_alternative for line in lines)
+    if has_alternatives:
+        story.append(
+            Paragraph(
+                "<font size='7' color='#64748B'>* Alternativ zur bauseitigen Prüfung</font>",
+                styles["body"],
+            )
+        )
+        story.append(Spacer(1, 6 * mm))
+    else:
+        story.append(Spacer(1, 4 * mm))
 
     # ── Closing text ───
     story.append(

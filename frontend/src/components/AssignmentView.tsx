@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { LVPosition, PriceAdjustment, ProductSearchResult, ProductSuggestion } from '../types'
+import { fetchInquiries, getProjectPdfUrl, sendBatchInquiries } from '../api'
+import type { LVPosition, PositionSuggestions, PriceAdjustment, ProductSearchResult, ProductSuggestion, SupplierInquiry } from '../types'
 import { DinBadge } from './DinBadge'
 import { InquiryModal } from './InquiryModal'
 import { PriceAdjustmentControl } from './PriceAdjustmentControl'
@@ -58,17 +59,28 @@ type FilterTab = 'alle' | 'zugeordnet' | 'offen' | 'dienstleistung'
 type Props = {
   positions: LVPosition[]
   suggestionMap: Record<string, ProductSuggestion[]>
-  selectedArticleIds: Record<string, string>
+  selectedArticleIds: Record<string, string[]>
   skippedPositionIds: Set<string>
   priceAdjustments: Record<string, PriceAdjustment>
+  categoryAdjustments: Record<string, PriceAdjustment>
   onAccept: (positionId: string, artikelId: string) => void
+  onSwapPrimary: (positionId: string, artikelId: string) => void
   onReject: (positionId: string) => void
   onManualSelect: (positionId: string, product: ProductSearchResult) => void
+  onAddArticle: (positionId: string, product: ProductSearchResult) => void
+  onRemoveArticle: (positionId: string, artikelId: string) => void
   onPriceAdjustmentChange: (positionId: string, adjustment: PriceAdjustment) => void
   onFinish: () => void
   onBackToOverview: () => void
   projectId?: number | null
   projectName?: string | null
+  alternativeFlags?: Record<string, boolean>
+  onToggleAlternative?: (positionId: string) => void
+  supplierOpenFlags?: Record<string, boolean>
+  onToggleSupplierOpen?: (positionId: string) => void
+  positionSuggestions?: PositionSuggestions[]
+  componentSelections?: Record<string, string>
+  onComponentSelect?: (positionId: string, componentName: string, artikelId: string) => void
 }
 
 export function AssignmentView({
@@ -77,21 +89,37 @@ export function AssignmentView({
   selectedArticleIds,
   skippedPositionIds,
   priceAdjustments,
+  categoryAdjustments,
   onAccept,
+  onSwapPrimary,
   onReject,
   onManualSelect,
+  onAddArticle,
+  onRemoveArticle,
   onPriceAdjustmentChange,
   onFinish,
   onBackToOverview,
   projectId,
   projectName,
+  alternativeFlags = {},
+  onToggleAlternative,
+  supplierOpenFlags = {},
+  onToggleSupplierOpen,
+  positionSuggestions = [],
+  componentSelections = {},
+  onComponentSelect,
 }: Props) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const [decisions, setDecisions] = useState<Record<string, AssignmentDecision>>({})
   const [searchOpen, setSearchOpen] = useState(false)
   const [inquiryOpen, setInquiryOpen] = useState(false)
+  const [inquiryProductName, setInquiryProductName] = useState<string | null>(null)
   const [slideDirection, setSlideDirection] = useState<'left' | 'right' | null>(null)
   const [activeFilter, setActiveFilter] = useState<FilterTab>('alle')
+  const [pendingInquiries, setPendingInquiries] = useState<SupplierInquiry[]>([])
+  const [inquiriesLoading, setInquiriesLoading] = useState(false)
+  const [sendingInquiries, setSendingInquiries] = useState(false)
+  const [inquiriesSentResult, setInquiriesSentResult] = useState<{ sent: number; failed: number } | null>(null)
 
   // Categorize positions
   const materialPositions = useMemo(
@@ -108,9 +136,9 @@ export function AssignmentView({
   const filteredPositions = useMemo(() => {
     switch (activeFilter) {
       case 'zugeordnet':
-        return materialPositions.filter(p => selectedArticleIds[p.id])
+        return materialPositions.filter(p => (selectedArticleIds[p.id]?.length ?? 0) > 0)
       case 'offen':
-        return materialPositions.filter(p => !selectedArticleIds[p.id])
+        return materialPositions.filter(p => (selectedArticleIds[p.id]?.length ?? 0) === 0)
       case 'dienstleistung':
         return servicePositions
       default:
@@ -120,17 +148,29 @@ export function AssignmentView({
 
   // Tab counts
   const assignedCount = useMemo(
-    () => materialPositions.filter(p => selectedArticleIds[p.id]).length,
+    () => materialPositions.filter(p => (selectedArticleIds[p.id]?.length ?? 0) > 0).length,
     [materialPositions, selectedArticleIds],
   )
   const openCount = useMemo(
-    () => materialPositions.filter(p => !selectedArticleIds[p.id]).length,
+    () => materialPositions.filter(p => (selectedArticleIds[p.id]?.length ?? 0) === 0).length,
     [materialPositions, selectedArticleIds],
   )
 
   const currentPosition = filteredPositions[currentIndex] ?? null
   const currentSuggestions = currentPosition ? suggestionMap[currentPosition.id] ?? [] : []
-  const currentSelectedArticle = currentPosition ? selectedArticleIds[currentPosition.id] : undefined
+  const currentSelectedArticles = currentPosition ? selectedArticleIds[currentPosition.id] ?? [] : []
+  const currentSelectedArticle = currentSelectedArticles[0]
+  const additionalArticleIds = useMemo(() => new Set(currentSelectedArticles.slice(1)), [currentSelectedArticles])
+  // Carousel shows only matching suggestions, not manually added additional articles
+  const carouselSuggestions = useMemo(
+    () => currentSuggestions.filter(s => !additionalArticleIds.has(s.artikel_id)),
+    [currentSuggestions, additionalArticleIds],
+  )
+  const [addArticleSearchOpen, setAddArticleSearchOpen] = useState(false)
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false)
+  const [showOriginalPdf, setShowOriginalPdf] = useState(false)
+  const [carouselIndex, setCarouselIndex] = useState(0)
+  const [swipeDir, setSwipeDir] = useState<'up' | 'down' | null>(null)
   const totalCount = filteredPositions.length
   const decidedCount = Object.keys(decisions).length
 
@@ -140,6 +180,31 @@ export function AssignmentView({
   useEffect(() => {
     setCurrentIndex(0)
   }, [activeFilter])
+
+  // Reset raw text toggle and carousel on position change
+  useEffect(() => {
+    setShowOriginalPdf(false)
+    setCarouselIndex(0)
+    setSwipeDir(null)
+  }, [currentIndex])
+
+  // Clear swipe animation direction after animation completes
+  useEffect(() => {
+    if (swipeDir) {
+      const timer = setTimeout(() => setSwipeDir(null), 250)
+      return () => clearTimeout(timer)
+    }
+  }, [swipeDir, carouselIndex])
+
+  // Auto-select the currently visible suggestion when swiping
+  // Uses onSwapPrimary to only replace the primary article, keeping additional articles intact
+  useEffect(() => {
+    if (!currentPosition || isServiceView) return
+    const suggestion = carouselSuggestions[carouselIndex]
+    if (suggestion) {
+      onSwapPrimary(currentPosition.id, suggestion.artikel_id)
+    }
+  }, [carouselIndex]) // intentionally minimal deps — only fire on carousel swipe
 
   // Slide animation
   useEffect(() => {
@@ -172,12 +237,22 @@ export function AssignmentView({
     goNext()
   }, [currentPosition, currentSelectedArticle, goNext])
 
-  const handleReject = useCallback(() => {
+  const handleRejectRequest = useCallback(() => {
     if (!currentPosition) return
+    setShowRejectConfirm(true)
+  }, [currentPosition])
+
+  const handleRejectConfirm = useCallback(() => {
+    if (!currentPosition) return
+    setShowRejectConfirm(false)
     onReject(currentPosition.id)
     setDecisions(prev => ({ ...prev, [currentPosition.id]: 'rejected' }))
     goNext()
   }, [currentPosition, onReject, goNext])
+
+  const handleRejectCancel = useCallback(() => {
+    setShowRejectConfirm(false)
+  }, [])
 
   const handleSkip = useCallback(() => {
     if (!currentPosition) return
@@ -191,6 +266,12 @@ export function AssignmentView({
     setSearchOpen(false)
   }, [currentPosition, onManualSelect])
 
+  const handleAddArticleSelect = useCallback((product: ProductSearchResult) => {
+    if (!currentPosition) return
+    onAddArticle(currentPosition.id, product)
+    setAddArticleSearchOpen(false)
+  }, [currentPosition, onAddArticle])
+
   const handleSkipAll = useCallback(() => {
     filteredPositions.forEach(p => {
       if (!decisions[p.id]) {
@@ -202,20 +283,20 @@ export function AssignmentView({
 
   // Keyboard shortcuts
   useEffect(() => {
-    if (isFinished || searchOpen) return
+    if (isFinished || searchOpen || showRejectConfirm) return
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
       switch (e.key) {
         case 'Enter':
           e.preventDefault()
-          if (currentSelectedArticle ?? currentSuggestions[0]?.artikel_id) {
+          if (currentSelectedArticle ?? carouselSuggestions[0]?.artikel_id) {
             handleContinue()
           }
           break
         case 'Escape':
           e.preventDefault()
-          handleReject()
+          handleRejectRequest()
           break
         case 'ArrowRight':
           e.preventDefault()
@@ -224,6 +305,20 @@ export function AssignmentView({
         case 'ArrowLeft':
           e.preventDefault()
           goPrev()
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          if (carouselIndex > 0) {
+            setSwipeDir('up')
+            setCarouselIndex(prev => prev - 1)
+          }
+          break
+        case 'ArrowDown':
+          e.preventDefault()
+          if (carouselIndex < carouselSuggestions.length - 1) {
+            setSwipeDir('down')
+            setCarouselIndex(prev => prev + 1)
+          }
           break
         case 's':
         case 'S':
@@ -234,7 +329,19 @@ export function AssignmentView({
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isFinished, searchOpen, currentSuggestions, currentSelectedArticle, handleContinue, handleReject, handleSkip, goPrev])
+  }, [isFinished, searchOpen, showRejectConfirm, carouselSuggestions, currentSelectedArticle, carouselIndex, handleContinue, handleRejectRequest, handleSkip, goPrev])
+
+  // Fetch pending inquiries when assignment is finished
+  useEffect(() => {
+    if (isFinished && projectId) {
+      setInquiriesLoading(true)
+      setInquiriesSentResult(null)
+      fetchInquiries(projectId)
+        .then(data => setPendingInquiries(data.filter(inq => inq.status === 'offen')))
+        .catch(() => setPendingInquiries([]))
+        .finally(() => setInquiriesLoading(false))
+    }
+  }, [isFinished, projectId])
 
   // Summary screen
   if (isFinished) {
@@ -242,20 +349,25 @@ export function AssignmentView({
     const rejectedCount = Object.values(decisions).filter(d => d === 'rejected').length
     const skippedCount = totalCount - acceptedCount - rejectedCount
     const svcCount = positions.length - materialPositions.length
+    const supplierOpenCount = Object.entries(supplierOpenFlags)
+      .filter(([posId, open]) => open && (selectedArticleIds[posId]?.length ?? 0) > 0)
+      .length
 
     // Calculate total value
     let totalValue = 0
-    for (const [posId, artId] of Object.entries(selectedArticleIds)) {
+    for (const [posId, artIds] of Object.entries(selectedArticleIds)) {
       if (skippedPositionIds.has(posId)) continue
       const suggestions = suggestionMap[posId]
       if (!suggestions) continue
-      const match = suggestions.find(s => s.artikel_id === artId)
       const position = positions.find(p => p.id === posId)
-      const adjustedTotal = computeAdjustedTotal(
-        computeAdjustedUnitPrice(match?.price_net, priceAdjustments[posId]),
-        position?.quantity,
-      )
-      if (adjustedTotal != null) totalValue += adjustedTotal
+      for (let i = 0; i < artIds.length; i++) {
+        const match = suggestions.find(s => s.artikel_id === artIds[i])
+        const unitPrice = i === 0
+          ? computeAdjustedUnitPrice(match?.price_net, priceAdjustments[posId])
+          : match?.price_net ?? null
+        const adjustedTotal = computeAdjustedTotal(unitPrice, position?.quantity)
+        if (adjustedTotal != null) totalValue += adjustedTotal
+      }
     }
 
     return (
@@ -288,6 +400,12 @@ export function AssignmentView({
                 <span className="stat-label">Dienstleistungen</span>
               </div>
             )}
+            {supplierOpenCount > 0 && (
+              <div className="summary-stat stat-supplier-open">
+                <span className="stat-number">{supplierOpenCount}</span>
+                <span className="stat-label">Lieferant offen</span>
+              </div>
+            )}
           </div>
 
           {totalValue > 0 && (
@@ -307,6 +425,52 @@ export function AssignmentView({
               Angebot exportieren
             </button>
           </div>
+
+          {/* Inquiry overview */}
+          {projectId && !inquiriesLoading && pendingInquiries.length > 0 && (
+            <div className="summary-inquiries">
+              <h3>Offene Lieferantenanfragen</h3>
+              <div className="inquiry-summary-list">
+                {Object.entries(
+                  pendingInquiries.reduce<Record<string, SupplierInquiry[]>>((acc, inq) => {
+                    const key = inq.supplier_name
+                    if (!acc[key]) acc[key] = []
+                    acc[key].push(inq)
+                    return acc
+                  }, {})
+                ).map(([supplierName, inquiries]) => (
+                  <div key={supplierName} className="inquiry-supplier-group">
+                    <span className="inquiry-supplier-name">{supplierName}</span>
+                    <span className="inquiry-count">{inquiries.length} Anfrage{inquiries.length !== 1 ? 'n' : ''}</span>
+                  </div>
+                ))}
+              </div>
+              {inquiriesSentResult ? (
+                <p className="inquiry-sent-result">
+                  {inquiriesSentResult.sent} gesendet{inquiriesSentResult.failed > 0 ? `, ${inquiriesSentResult.failed} fehlgeschlagen` : ''}
+                </p>
+              ) : (
+                <button
+                  className="btn btn-primary"
+                  disabled={sendingInquiries}
+                  onClick={async () => {
+                    setSendingInquiries(true)
+                    try {
+                      const result = await sendBatchInquiries(projectId)
+                      setInquiriesSentResult({ sent: result.sent_count, failed: result.failed_count })
+                      setPendingInquiries([])
+                    } catch {
+                      setInquiriesSentResult({ sent: 0, failed: pendingInquiries.length })
+                    } finally {
+                      setSendingInquiries(false)
+                    }
+                  }}
+                >
+                  {sendingInquiries ? 'Wird gesendet...' : `Alle ${pendingInquiries.length} Anfragen absenden`}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     )
@@ -314,11 +478,19 @@ export function AssignmentView({
 
   const isServiceView = activeFilter === 'dienstleistung'
   const topSuggestion = currentSuggestions[0] ?? null
-  const otherSuggestions = currentSuggestions.slice(1)
   const showLoadClass = currentPosition ? LOAD_CLASS_CATEGORIES.has(currentPosition.parameters.product_category ?? '') : false
-  const currentPriceAdjustment = currentPosition ? priceAdjustments[currentPosition.id] : undefined
-  const pricingReferenceSuggestion = currentSuggestions.find((s) => s.artikel_id === currentSelectedArticle) ?? topSuggestion
+  const currentPriceAdjustment = currentPosition
+    ? priceAdjustments[currentPosition.id] ?? categoryAdjustments[topSuggestion?.category ?? '']
+    : undefined
+  const pricingReferenceSuggestion = currentSuggestions.find((s) => s.artikel_id === currentSelectedArticles[0]) ?? topSuggestion
   const progressPercent = totalCount > 0 ? (currentIndex / totalCount) * 100 : 0
+
+  // Multi-component: check if current position has component_suggestions
+  const currentPosSuggestionEntry = currentPosition
+    ? positionSuggestions.find(ps => ps.position_id === currentPosition.id)
+    : null
+  const currentComponentSuggestions = currentPosSuggestionEntry?.component_suggestions ?? null
+  const isMultiComponent = currentComponentSuggestions != null && currentComponentSuggestions.length > 1
 
   return (
     <div className="assignment-view">
@@ -370,7 +542,7 @@ export function AssignmentView({
           <div className="progress-bar-fill" style={{ width: `${progressPercent}%` }} />
         </div>
         <div className="progress-shortcuts">
-          Enter = Übernehmen & weiter &middot; Esc = Ablehnen &middot; Pfeiltasten = Navigation &middot; S = Suchen
+          Enter = Übernehmen &middot; Esc = Ablehnen &middot; ←→ = Navigation &middot; ↑↓ = Vorschläge &middot; S = Suchen
         </div>
       </div>
 
@@ -409,25 +581,81 @@ export function AssignmentView({
                 <span className="param-chip quantity">{currentPosition.quantity} {currentPosition.unit}</span>
               )}
             </div>
-            {currentSelectedArticle && (() => {
-              const selectedArt = currentSuggestions.find(s => s.artikel_id === currentSelectedArticle)
-              return selectedArt ? (
+            {projectId && (
+              <span
+                className={`original-lv-toggle ${showOriginalPdf ? 'open' : ''}`}
+                onClick={() => setShowOriginalPdf(v => !v)}
+                title="Original-LV Position anzeigen"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                  <path d="M9 18l6-6-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Original-LV
+              </span>
+            )}
+            {currentSelectedArticles.length > 0 && (() => {
+              const badges = currentSelectedArticles.map((artId, idx) => {
+                const sug = currentSuggestions.find(s => s.artikel_id === artId)
+                if (!sug) return null
+                const isPrimary = idx === 0
+                return (
+                  <div key={artId} className="assigned-article-badge">
+                    {isPrimary ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                        <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <span className="badge-plus">+</span>
+                    )}
+                    <span className="badge-name">{sug.artikelname}</span>
+                    <span className="badge-id">{sug.artikel_id}</span>
+                    {!isPrimary && (
+                      <button
+                        className="badge-remove"
+                        title="Zusatzartikel entfernen"
+                        onClick={(e) => { e.stopPropagation(); onRemoveArticle(currentPosition!.id, artId) }}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                )
+              }).filter(Boolean)
+              return badges.length > 0 ? (
                 <>
                   <hr className="selected-article-divider" />
-                  <div className="position-selected-article">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                      <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    <span>{selectedArt.artikelname}</span>
-                    <span style={{ color: 'var(--ink-400)', fontSize: '0.65rem' }}>{selectedArt.artikel_id}</span>
-                  </div>
+                  <div className="assigned-articles-badges">{badges}</div>
                 </>
               ) : null
             })()}
+            {!isServiceView && currentSelectedArticles.length > 0 && onToggleAlternative && (
+              <label className={`alt-check-label ${alternativeFlags[currentPosition.id] ? 'alt-active' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={alternativeFlags[currentPosition.id] ?? false}
+                  onChange={() => onToggleAlternative(currentPosition.id)}
+                />
+                <span>Alternativ z. baus. Prüfung</span>
+                {alternativeFlags[currentPosition.id] && <span className="alt-badge">ALT</span>}
+              </label>
+            )}
             {isServiceView && (
               <div className="service-badge-info">Dienstleistung — nicht im Angebot enthalten</div>
             )}
           </div>
+
+          {showOriginalPdf && projectId && (
+            <div className="original-lv-panel">
+              <iframe
+                key={currentPosition.ordnungszahl}
+                src={`${getProjectPdfUrl(projectId)}#page=${currentPosition.source_page ?? 1}`}
+                className="original-lv-iframe"
+                title="Original LV"
+              />
+            </div>
+          )}
 
           {!isServiceView && currentPosition && pricingReferenceSuggestion && (
             <PriceAdjustmentControl
@@ -439,27 +667,93 @@ export function AssignmentView({
             />
           )}
 
-          {/* Top suggestion (not for service positions) */}
-          {!isServiceView && topSuggestion && (
-            <div className="assignment-top-suggestion">
-              <div className="top-label">Bester Vorschlag</div>
-              {renderSuggestionCard(
-                topSuggestion,
-                currentPosition,
-                showLoadClass,
-                true,
-                currentPriceAdjustment,
-                currentSelectedArticle,
-                () => handleSelectArticle(topSuggestion.artikel_id),
-              )}
+          {/* Multi-component position */}
+          {!isServiceView && isMultiComponent && currentPosition && currentComponentSuggestions && (
+            <div className="multi-component-section">
+              <div className="multi-component-badge">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Mehrkomponenten-Position ({currentComponentSuggestions.length} Teile)
+              </div>
+              {(() => {
+                // DN consistency check
+                const dns = currentComponentSuggestions
+                  .map(cs => {
+                    const selKey = `${currentPosition.id}::${cs.component_name}`
+                    const selId = componentSelections[selKey]
+                    const selSugg = selId ? cs.suggestions.find(s => s.artikel_id === selId) : cs.suggestions[0]
+                    return selSugg?.dn
+                  })
+                  .filter((dn): dn is number => dn != null)
+                const uniqueDns = new Set(dns)
+                const dnInconsistent = uniqueDns.size > 1
+                return dnInconsistent ? (
+                  <div className="multi-component-warning">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="#ca8a04" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    DN-Inkonsistenz: Komponenten haben unterschiedliche Nennweiten ({Array.from(uniqueDns).map(d => `DN${d}`).join(', ')})
+                  </div>
+                ) : null
+              })()}
+              <div className="component-list">
+                {currentComponentSuggestions.map(cs => {
+                  const selKey = `${currentPosition.id}::${cs.component_name}`
+                  const selectedId = componentSelections[selKey]
+                  const topComp = cs.suggestions[0]
+                  const selectedSugg = selectedId ? cs.suggestions.find(s => s.artikel_id === selectedId) ?? topComp : topComp
+
+                  return (
+                    <div key={cs.component_name} className="component-card">
+                      <div className="component-card-header">
+                        <span className="component-name">{cs.component_name}</span>
+                        <span className="component-qty">{cs.quantity}x</span>
+                      </div>
+                      {cs.suggestions.length > 0 && selectedSugg ? (
+                        <div className="component-match">
+                          <div className="component-match-info">
+                            <span className="component-article-name">{selectedSugg.artikelname}</span>
+                            <span className="component-article-meta">
+                              {selectedSugg.artikel_id}
+                              {selectedSugg.hersteller && <> &middot; {selectedSugg.hersteller}</>}
+                              {selectedSugg.dn != null && <> &middot; DN{selectedSugg.dn}</>}
+                            </span>
+                            {selectedSugg.price_net != null && (
+                              <span className="component-article-price">
+                                {formatMoney(selectedSugg.price_net)} / Einheit
+                              </span>
+                            )}
+                          </div>
+                          {cs.suggestions.length > 1 && (
+                            <select
+                              className="component-select"
+                              value={selectedId ?? topComp?.artikel_id ?? ''}
+                              onChange={e => onComponentSelect?.(currentPosition.id, cs.component_name, e.target.value)}
+                            >
+                              {cs.suggestions.map(s => (
+                                <option key={s.artikel_id} value={s.artikel_id}>
+                                  {s.artikelname} ({formatMoney(s.price_net)})
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="component-no-match">Kein passender Artikel</div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
               <div className="top-actions">
-                <button className="btn btn-accept" onClick={handleContinue} disabled={!currentSelectedArticle}>
+                <button className="btn btn-accept" onClick={handleContinue}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                     <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  Übernehmen & weiter
+                  Alle Komponenten übernehmen
                 </button>
-                <button className="btn btn-reject" onClick={handleReject}>
+                <button className="btn btn-reject" onClick={handleRejectRequest}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
                     <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                   </svg>
@@ -469,7 +763,94 @@ export function AssignmentView({
             </div>
           )}
 
-          {!isServiceView && !topSuggestion && (
+          {/* Unified suggestion carousel — all suggestions in one swipeable view */}
+          {!isServiceView && !isMultiComponent && carouselSuggestions.length > 0 && (
+            <div className="assignment-carousel-unified">
+              <div className="carousel-header">
+                <span className="carousel-title">
+                  {carouselIndex === 0 ? 'Bester Vorschlag' : `Vorschlag ${carouselIndex + 1}`}
+                </span>
+                <div className="carousel-nav-compact">
+                  <button
+                    className="carousel-arrow-sm"
+                    disabled={carouselIndex === 0}
+                    onClick={() => { setSwipeDir('up'); setCarouselIndex(prev => prev - 1) }}
+                    title="Vorheriger Vorschlag (↑)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M18 15l-6-6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                  <span className="carousel-indicator">{carouselIndex + 1} / {carouselSuggestions.length}</span>
+                  <button
+                    className="carousel-arrow-sm"
+                    disabled={carouselIndex >= carouselSuggestions.length - 1}
+                    onClick={() => { setSwipeDir('down'); setCarouselIndex(prev => prev + 1) }}
+                    title="Nächster Vorschlag (↓)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div
+                key={carouselIndex}
+                className={`carousel-card-animated ${swipeDir === 'down' ? 'swipe-up-enter' : swipeDir === 'up' ? 'swipe-down-enter' : ''}`}
+              >
+                {renderSuggestionCard(
+                  carouselSuggestions[carouselIndex],
+                  currentPosition,
+                  showLoadClass,
+                  carouselIndex === 0,
+                  currentPriceAdjustment,
+                  currentSelectedArticles,
+                  () => handleSelectArticle(carouselSuggestions[carouselIndex].artikel_id),
+                  () => {
+                    setInquiryProductName(carouselSuggestions[carouselIndex].artikelname)
+                    setInquiryOpen(true)
+                  },
+                )}
+              </div>
+              {carouselSuggestions.length > 1 && (
+                <div className="carousel-dots">
+                  {carouselSuggestions.map((_, i) => (
+                    <button
+                      key={i}
+                      className={`carousel-dot ${i === carouselIndex ? 'active' : ''}`}
+                      onClick={() => { setSwipeDir(i > carouselIndex ? 'down' : 'up'); setCarouselIndex(i) }}
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="top-actions">
+                <button className="btn btn-accept" onClick={handleContinue} disabled={!currentSelectedArticle}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M20 6L9 17l-5-5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Übernehmen & weiter
+                </button>
+                <button className="btn btn-reject" onClick={handleRejectRequest}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                  Ablehnen
+                </button>
+                {currentPosition && onToggleSupplierOpen && (
+                  <label className="supplier-open-toggle">
+                    <input
+                      type="checkbox"
+                      checked={supplierOpenFlags[currentPosition.id] ?? false}
+                      onChange={() => onToggleSupplierOpen(currentPosition.id)}
+                    />
+                    Lieferant offen
+                  </label>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!isServiceView && !isMultiComponent && carouselSuggestions.length === 0 && (
             <div className="assignment-no-match">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
                 <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
@@ -490,41 +871,71 @@ export function AssignmentView({
                   </svg>
                   Lieferantenanfrage
                 </button>
+                <button className="btn btn-reject" onClick={handleRejectRequest}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                  Ablehnen
+                </button>
               </div>
             </div>
           )}
 
-          {/* Other suggestions (collapsed) */}
-          {!isServiceView && otherSuggestions.length > 0 && (
-            <details className="assignment-alternatives">
-              <summary>Weitere Vorschläge ({otherSuggestions.length})</summary>
-              <div className="alternatives-list">
-                {otherSuggestions.map(s => (
-                  <div key={s.artikel_id} className="alternative-card">
-                    {renderSuggestionCard(
-                      s,
-                      currentPosition,
-                      showLoadClass,
-                      false,
-                      currentPriceAdjustment,
-                      currentSelectedArticle,
-                      () => handleSelectArticle(s.artikel_id),
-                    )}
+          {/* Additional articles section */}
+          {!isServiceView && currentSelectedArticles.length > 1 && (() => {
+            const additionalArts = currentSelectedArticles.slice(1)
+              .map(id => currentSuggestions.find(s => s.artikel_id === id))
+              .filter(Boolean) as ProductSuggestion[]
+            return additionalArts.length > 0 ? (
+              <div className="additional-articles-section">
+                <div className="additional-articles-header">Zusatzartikel</div>
+                {additionalArts.map(art => (
+                  <div key={art.artikel_id} className="additional-article-card">
+                    <div className="additional-article-info">
+                      <span className="additional-article-plus">+</span>
+                      <div className="additional-article-detail">
+                        <strong>{art.artikelname}</strong>
+                        <span className="additional-article-meta">
+                          {art.artikel_id}
+                          {art.hersteller && <> &middot; {art.hersteller}</>}
+                          {art.price_net != null && <> &middot; {new Intl.NumberFormat('de-DE', { style: 'currency', currency: art.currency ?? 'EUR' }).format(art.price_net)} / Einheit</>}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      className="btn-icon-tiny"
+                      title="Entfernen"
+                      onClick={() => onRemoveArticle(currentPosition!.id, art.artikel_id)}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                        <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                      </svg>
+                    </button>
                   </div>
                 ))}
               </div>
-            </details>
-          )}
+            ) : null
+          })()}
 
-          {/* Manual search button */}
-          {!isServiceView && topSuggestion && (
-            <button className="btn btn-ghost assignment-search-btn" onClick={() => setSearchOpen(true)}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
-                <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-              Manuell suchen
-            </button>
+          {/* Manual search & add article buttons */}
+          {!isServiceView && carouselSuggestions.length > 0 && (
+            <div className="assignment-bottom-actions">
+              <button className="btn btn-ghost assignment-search-btn" onClick={() => setSearchOpen(true)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                  <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+                  <path d="M21 21l-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                Manuell suchen
+              </button>
+              {currentSelectedArticles.length > 0 && (
+                <button className="btn btn-ghost assignment-search-btn" onClick={() => setAddArticleSearchOpen(true)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                  Artikel hinzufügen
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -564,6 +975,23 @@ export function AssignmentView({
         </div>
       )}
 
+      {/* Rejection confirmation dialog */}
+      {showRejectConfirm && currentPosition && (
+        <div className="modal-backdrop" onClick={handleRejectCancel}>
+          <div className="modal-box reject-confirm-modal" onClick={e => e.stopPropagation()}>
+            <h3>Position ohne Zuordnung lassen?</h3>
+            <p className="reject-confirm-oz">OZ {currentPosition.ordnungszahl}</p>
+            <p className="reject-confirm-desc">Für diese Position wird kein Artikel im Angebot enthalten sein.</p>
+            <div className="reject-confirm-actions">
+              <button className="btn btn-ghost" onClick={handleRejectCancel}>Abbrechen</button>
+              <button className="btn btn-reject" onClick={handleRejectConfirm}>
+                Ja, ohne Zuordnung
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Product search modal */}
       {currentPosition && (
         <>
@@ -574,12 +1002,20 @@ export function AssignmentView({
             initialCategory={currentPosition.parameters.product_category}
             initialDn={currentPosition.parameters.nominal_diameter_dn}
           />
+          <ProductSearchModal
+            isOpen={addArticleSearchOpen}
+            onClose={() => setAddArticleSearchOpen(false)}
+            onSelect={handleAddArticleSelect}
+            initialCategory={currentPosition.parameters.product_category}
+            initialDn={currentPosition.parameters.nominal_diameter_dn}
+          />
           <InquiryModal
             isOpen={inquiryOpen}
-            onClose={() => setInquiryOpen(false)}
+            onClose={() => { setInquiryOpen(false); setInquiryProductName(null) }}
             position={currentPosition}
             projectId={projectId}
             projectName={projectName}
+            productDescription={inquiryProductName}
           />
         </>
       )}
@@ -593,14 +1029,16 @@ function renderSuggestionCard(
   showLoadClass: boolean,
   isTop: boolean,
   priceAdjustment: PriceAdjustment | undefined,
-  currentSelectedArticle: string | undefined,
+  currentSelectedArticles: string[],
   onSelect: () => void,
+  onInquiry?: () => void,
 ) {
   const stock = stockStatus(suggestion.stock)
-  const isSelected = currentSelectedArticle === suggestion.artikel_id
+  const isSelected = currentSelectedArticles.includes(suggestion.artikel_id)
   const adjustedUnitPrice = computeAdjustedUnitPrice(suggestion.price_net, priceAdjustment)
   const adjustedTotal = computeAdjustedTotal(adjustedUnitPrice, position.quantity)
-  const showAdjusted = isSelected && isAdjustedPrice(suggestion.price_net, adjustedUnitPrice)
+  const isPrimary = currentSelectedArticles[0] === suggestion.artikel_id
+  const showAdjusted = isPrimary && isAdjustedPrice(suggestion.price_net, adjustedUnitPrice)
   const hasWarnings = suggestion.warnings.length > 0
 
   return (
@@ -719,11 +1157,22 @@ function renderSuggestionCard(
         <span className={`stock-indicator ${stock.className}`}>
           <span className="stock-dot" />
           {stock.label}
+          {suggestion.stock != null && suggestion.stock > 0 && position.quantity != null && suggestion.stock < position.quantity && (
+            <span className="stock-needed"> (benötigt: {position.quantity})</span>
+          )}
         </span>
         {suggestion.delivery_days != null && (
           <span className="delivery-badge">
             {suggestion.delivery_days} Tage Lieferzeit
           </span>
+        )}
+        {onInquiry && (suggestion.stock == null || suggestion.stock <= 0 || (position.quantity != null && suggestion.stock < position.quantity)) && (
+          <button className="btn-inquiry-inline" onClick={(e) => { e.stopPropagation(); onInquiry() }} title="Lieferantenanfrage stellen">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Anfragen
+          </button>
         )}
       </div>
 
@@ -735,16 +1184,20 @@ function renderSuggestionCard(
         </div>
       )}
 
-      {suggestion.reasons.length > 0 && !suggestion.is_manual && (
-        <div className="reason-chips">
-          {suggestion.reasons.map((reason) => {
-            const isNegative = reason.includes('abweichend') || reason.includes('weicht ab') || reason.includes('unter ') || reason.includes('≠')
-            return (
-              <span key={reason} className={`reason-chip ${isNegative ? 'reason-negative' : ''}`}>{reason}</span>
-            )
-          })}
-        </div>
-      )}
+      {suggestion.reasons.length > 0 && !suggestion.is_manual && (() => {
+        const filtered = suggestion.reasons.filter(r => !r.toLowerCase().includes('lager'))
+        return filtered.length > 0 ? (
+          <div className="reason-chips">
+            {filtered.map((reason) => {
+              const lower = reason.toLowerCase()
+              const isNegative = lower.includes('abweichend') || lower.includes('weicht ab') || lower.includes('unter ') || lower.includes('≠') || lower.includes('kein') || lower.includes('nicht') || lower.includes('ohne') || lower.includes('fehlt')
+              return (
+                <span key={reason} className={`reason-chip ${isNegative ? 'reason-negative' : ''}`}>{reason}</span>
+              )
+            })}
+          </div>
+        ) : null
+      })()}
     </div>
   )
 }

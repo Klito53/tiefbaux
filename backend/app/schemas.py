@@ -6,6 +6,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ComponentRequirement(BaseModel):
+    component_name: str
+    product_category: str | None = None
+    product_subcategory: str | None = None
+    nominal_diameter_dn: int | None = None
+    quantity: int = 1
+    material: str | None = None
+
+
 class TechnicalParameters(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -26,6 +35,7 @@ class TechnicalParameters(BaseModel):
     pipe_length_mm: int | None = None
     angle_deg: int | None = None
     application_area: str | None = None
+    components: list[ComponentRequirement] | None = None
 
 
 class LVPosition(BaseModel):
@@ -98,18 +108,18 @@ class ProductSuggestion(BaseModel):
     is_override: bool = False
 
 
+class ComponentSuggestions(BaseModel):
+    component_name: str
+    quantity: int = 1
+    suggestions: list[ProductSuggestion] = Field(default_factory=list)
+
+
 class PositionSuggestions(BaseModel):
     position_id: str
     ordnungszahl: str
     description: str
     suggestions: list[ProductSuggestion] = Field(default_factory=list)
-
-
-class CompatibilityIssue(BaseModel):
-    severity: str
-    rule: str
-    message: str
-    positions: list[str] = Field(default_factory=list)
+    component_suggestions: list[ComponentSuggestions] | None = None
 
 
 class SuggestionsRequest(BaseModel):
@@ -118,16 +128,17 @@ class SuggestionsRequest(BaseModel):
 
 class SuggestionsResponse(BaseModel):
     suggestions: list[PositionSuggestions]
-    compatibility_issues: list[CompatibilityIssue]
 
 
 class ExportOfferRequest(BaseModel):
     positions: list[LVPosition]
-    selected_article_ids: dict[str, str]
+    selected_article_ids: dict[str, list[str]]
     custom_unit_prices: dict[str, float] = Field(default_factory=dict)
     customer_name: str | None = None
     customer_address: str | None = None
     project_name: str | None = None
+    alternative_flags: dict[str, bool] = Field(default_factory=dict)
+    supplier_open_flags: dict[str, bool] = Field(default_factory=dict)
 
 
 class OfferLine(BaseModel):
@@ -140,6 +151,9 @@ class OfferLine(BaseModel):
     hersteller: str | None = None
     price_net: float
     total_net: float
+    is_additional: bool = False
+    is_alternative: bool = False
+    supplier_open: bool = False
 
 
 class ExportOfferMetadata(BaseModel):
@@ -173,11 +187,9 @@ class ProductSearchResult(BaseModel):
     vk_listenpreis_netto: float | None = None
     lager_gesamt: int | None = None
     waehrung: str | None = None
-
-
-class CompatibilityCheckRequest(BaseModel):
-    positions: list[LVPosition]
-    selected_article_ids: dict[str, str]
+    steifigkeitsklasse_sn: str | None = None
+    norm_primaer: str | None = None
+    werkstoff: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -188,6 +200,7 @@ class ProjectSummary(BaseModel):
     id: int
     filename: str | None = None
     project_name: str | None = None
+    projekt_nr: str | None = None
     total_positions: int
     billable_positions: int
     service_positions: int
@@ -202,12 +215,12 @@ class ProjectDetailResponse(BaseModel):
     project: ProjectSummary
     positions: list[LVPosition]
     metadata: ProjectMetadata | None = None
-    selections: dict[str, str] | None = None
+    selections: dict[str, list[str]] | None = None
 
 
 class SaveSelectionsRequest(BaseModel):
     project_id: int
-    selected_article_ids: dict[str, str]
+    selected_article_ids: dict[str, list[str]]
 
 
 class OverrideRequest(BaseModel):
@@ -252,6 +265,27 @@ class InquiryCreateRequest(BaseModel):
     send_email: bool = True
 
 
+class InquiryBatchCreateRequest(BaseModel):
+    supplier_ids: list[int]
+    project_id: int | None = None
+    position_id: str | None = None
+    ordnungszahl: str | None = None
+    product_description: str
+    technical_params: TechnicalParameters | None = None
+    quantity: float | None = None
+    unit: str | None = None
+    custom_message: str | None = None
+
+
+class BatchSendRequest(BaseModel):
+    project_id: int
+
+
+class BatchSendResponse(BaseModel):
+    sent_count: int
+    failed_count: int
+
+
 class InquiryResponse(BaseModel):
     id: int
     supplier_name: str
@@ -272,3 +306,28 @@ class InquiryResponse(BaseModel):
 class InquiryStatusUpdate(BaseModel):
     status: str
     notes: str | None = None
+
+
+# --- Objektradar / Tenders ---
+
+class TenderResponse(BaseModel):
+    id: int
+    external_id: str
+    title: str
+    description: str | None = None
+    auftraggeber: str | None = None
+    ort: str | None = None
+    cpv_codes: list[str] = Field(default_factory=list)
+    submission_deadline: str | None = None
+    publication_date: str | None = None
+    url: str | None = None
+    status: str = "neu"
+    relevance_score: int = 0
+    lat: float | None = None
+    lng: float | None = None
+    created_at: datetime | None = None
+    project_id: int | None = None
+
+
+class TenderStatusUpdate(BaseModel):
+    status: str

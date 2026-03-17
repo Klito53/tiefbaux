@@ -17,7 +17,11 @@ async def lifespan(_app: FastAPI):
     with SessionLocal() as db:
         seed_products_if_empty(db)
         seed_suppliers_if_empty(db)
+    # Start background scheduler for Objektradar
+    from .services.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
     yield
+    stop_scheduler()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)

@@ -1,3 +1,12 @@
+export type ComponentRequirement = {
+  component_name: string
+  product_category?: string | null
+  product_subcategory?: string | null
+  nominal_diameter_dn?: number | null
+  quantity: number
+  material?: string | null
+}
+
 export type TechnicalParameters = {
   product_category?: string | null
   product_subcategory?: string | null
@@ -13,6 +22,7 @@ export type TechnicalParameters = {
   installation_area?: string | null
   stiffness_class_sn?: number | null
   sortiment_relevant?: boolean | null
+  components?: ComponentRequirement[] | null
 }
 
 export type LVPosition = {
@@ -58,18 +68,18 @@ export type ProductSuggestion = {
   is_override?: boolean
 }
 
+export type ComponentSuggestions = {
+  component_name: string
+  quantity: number
+  suggestions: ProductSuggestion[]
+}
+
 export type PositionSuggestions = {
   position_id: string
   ordnungszahl: string
   description: string
   suggestions: ProductSuggestion[]
-}
-
-export type CompatibilityIssue = {
-  severity: string
-  rule: string
-  message: string
-  positions: string[]
+  component_suggestions?: ComponentSuggestions[] | null
 }
 
 export type ProjectMetadata = {
@@ -100,7 +110,6 @@ export type ParseResponse = {
 
 export type SuggestionResponse = {
   suggestions: PositionSuggestions[]
-  compatibility_issues: CompatibilityIssue[]
 }
 
 export type ExportWarning = {
@@ -133,16 +142,20 @@ export type ProductSearchResult = {
   vk_listenpreis_netto?: number | null
   lager_gesamt?: number | null
   waehrung?: string | null
+  steifigkeitsklasse_sn?: string | null
+  norm_primaer?: string | null
+  werkstoff?: string | null
 }
 
 export type AnalysisStep = 'idle' | 'uploading' | 'parsing' | 'enriching' | 'matching' | 'done' | 'error'
 
-export type AppView = 'analysis' | 'archive'
+export type AppView = 'analysis' | 'archive' | 'radar'
 
 export type ProjectSummary = {
   id: number
   filename: string | null
   project_name: string | null
+  projekt_nr?: string | null
   total_positions: number
   billable_positions: number
   service_positions: number
@@ -157,12 +170,12 @@ export type ProjectDetailResponse = {
   project: ProjectSummary
   positions: LVPosition[]
   metadata?: ProjectMetadata | null
-  selections?: Record<string, string> | null
+  selections?: Record<string, string[]> | null
 }
 
 export type UndoAction =
-  | { type: 'select'; positionId: string; previousArticleId: string | undefined }
-  | { type: 'deselect'; positionId: string; previousArticleId: string }
+  | { type: 'select'; positionId: string; previousArticleIds: string[] | undefined }
+  | { type: 'deselect'; positionId: string; previousArticleIds: string[] }
   | { type: 'skip'; positionId: string }
   | { type: 'unskip'; positionId: string }
 
@@ -174,6 +187,25 @@ export type Supplier = {
   categories: string[]
   notes?: string | null
   active: boolean
+}
+
+export type Tender = {
+  id: number
+  external_id: string
+  title: string
+  description?: string | null
+  auftraggeber?: string | null
+  ort?: string | null
+  cpv_codes: string[]
+  submission_deadline?: string | null
+  publication_date?: string | null
+  url?: string | null
+  status: 'neu' | 'relevant' | 'irrelevant' | 'analysiert'
+  relevance_score: number
+  lat?: number | null
+  lng?: number | null
+  created_at?: string | null
+  project_id?: number | null
 }
 
 export type SupplierInquiry = {

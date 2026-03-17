@@ -34,6 +34,12 @@ export function Header({ activeView, onViewChange }: Props) {
           >
             Projektarchiv
           </button>
+          <button
+            className={`view-tab ${activeView === 'radar' ? 'view-tab--active' : ''}`}
+            onClick={() => onViewChange('radar')}
+          >
+            Objektradar
+          </button>
         </nav>
       </div>
     </header>

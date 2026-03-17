@@ -5,8 +5,23 @@ import type { ProductSearchResult } from '../types'
 const CATEGORIES = [
   '', 'Kanalrohre', 'Formstücke', 'Schachtbauteile', 'Schachtabdeckungen',
   'Straßenentwässerung', 'Rinnen', 'Dichtungen & Zubehör', 'Geotextilien',
-  'Kabelschutz', 'Regenwasser', 'Versickerung',
+  'Kabelschutz', 'Regenwasser', 'Versickerung', 'Hausanschlüsse',
 ]
+
+// Which extra filters are available per category
+const CATEGORY_FILTERS: Record<string, string[]> = {
+  Kanalrohre: ['dn', 'sn', 'material'],
+  Formstücke: ['dn', 'angle', 'material'],
+  Schachtbauteile: ['dn', 'load_class'],
+  Schachtabdeckungen: ['load_class', 'material'],
+  Straßenentwässerung: ['load_class', 'dn'],
+  Hausanschlüsse: ['dn', 'material'],
+  Rinnen: ['load_class'],
+  'Dichtungen & Zubehör': ['dn', 'material'],
+}
+
+const SN_OPTIONS = ['', '2', '4', '8', '10', '12', '16']
+const LOAD_CLASS_OPTIONS = ['', 'A15', 'B125', 'C250', 'D400', 'E600', 'F900']
 
 type Props = {
   isOpen: boolean
@@ -29,10 +44,16 @@ export function ProductSearchModal({ isOpen, onClose, onSelect, initialCategory,
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState(initialCategory ?? '')
   const [dn, setDn] = useState(initialDn?.toString() ?? '')
+  const [sn, setSn] = useState('')
+  const [loadClass, setLoadClass] = useState('')
+  const [material, setMaterial] = useState('')
+  const [angle, setAngle] = useState('')
   const [results, setResults] = useState<ProductSearchResult[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const activeFilters = CATEGORY_FILTERS[category] ?? []
 
   // Reset filters when opening with new position
   useEffect(() => {
@@ -40,19 +61,38 @@ export function ProductSearchModal({ isOpen, onClose, onSelect, initialCategory,
       setCategory(initialCategory ?? '')
       setDn(initialDn?.toString() ?? '')
       setQuery('')
+      setSn('')
+      setLoadClass('')
+      setMaterial('')
+      setAngle('')
       setResults([])
       setTimeout(() => inputRef.current?.focus(), 100)
     }
   }, [isOpen, initialCategory, initialDn])
 
-  const doSearch = useCallback(async (q: string, cat: string, dnVal: string) => {
+  // Reset category-specific filters when category changes
+  useEffect(() => {
+    setSn('')
+    setLoadClass('')
+    setMaterial('')
+    setAngle('')
+  }, [category])
+
+  const doSearch = useCallback(async (params: {
+    q: string; cat: string; dn: string; sn: string; loadClass: string; material: string; angle: string
+  }) => {
     setIsLoading(true)
     try {
-      const parsedDn = dnVal ? parseInt(dnVal, 10) : undefined
+      const parsedDn = params.dn ? parseInt(params.dn, 10) : undefined
+      const parsedAngle = params.angle ? parseInt(params.angle, 10) : undefined
       const data = await searchProducts({
-        q: q || undefined,
-        category: cat || undefined,
+        q: params.q || undefined,
+        category: params.cat || undefined,
         dn: parsedDn && !isNaN(parsedDn) ? parsedDn : undefined,
+        sn: params.sn || undefined,
+        load_class: params.loadClass || undefined,
+        material: params.material || undefined,
+        angle: parsedAngle && !isNaN(parsedAngle) ? parsedAngle : undefined,
       })
       setResults(data)
     } catch {
@@ -67,10 +107,10 @@ export function ProductSearchModal({ isOpen, onClose, onSelect, initialCategory,
     if (!isOpen) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      doSearch(query, category, dn)
+      doSearch({ q: query, cat: category, dn, sn, loadClass, material, angle })
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [query, category, dn, isOpen, doSearch])
+  }, [query, category, dn, sn, loadClass, material, angle, isOpen, doSearch])
 
   if (!isOpen) return null
 
@@ -105,13 +145,61 @@ export function ProductSearchModal({ isOpen, onClose, onSelect, initialCategory,
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
-          <input
-            type="number"
-            value={dn}
-            onChange={e => setDn(e.target.value)}
-            placeholder="DN"
-            className="search-dn"
-          />
+
+          <div className="search-extra-filters">
+            {activeFilters.includes('dn') && (
+              <input
+                type="number"
+                value={dn}
+                onChange={e => setDn(e.target.value)}
+                placeholder="DN"
+                className="search-dn"
+              />
+            )}
+            {!activeFilters.includes('dn') && !category && (
+              <input
+                type="number"
+                value={dn}
+                onChange={e => setDn(e.target.value)}
+                placeholder="DN"
+                className="search-dn"
+              />
+            )}
+            {activeFilters.includes('sn') && (
+              <select value={sn} onChange={e => setSn(e.target.value)} className="search-select-sm">
+                <option value="">SN</option>
+                {SN_OPTIONS.filter(Boolean).map(v => (
+                  <option key={v} value={v}>SN {v}</option>
+                ))}
+              </select>
+            )}
+            {activeFilters.includes('load_class') && (
+              <select value={loadClass} onChange={e => setLoadClass(e.target.value)} className="search-select-sm">
+                <option value="">Belastungsklasse</option>
+                {LOAD_CLASS_OPTIONS.filter(Boolean).map(v => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            )}
+            {activeFilters.includes('material') && (
+              <input
+                type="text"
+                value={material}
+                onChange={e => setMaterial(e.target.value)}
+                placeholder="Werkstoff"
+                className="search-material"
+              />
+            )}
+            {activeFilters.includes('angle') && (
+              <input
+                type="number"
+                value={angle}
+                onChange={e => setAngle(e.target.value)}
+                placeholder="Winkel (°)"
+                className="search-dn"
+              />
+            )}
+          </div>
         </div>
 
         <div className="search-results">
@@ -130,6 +218,8 @@ export function ProductSearchModal({ isOpen, onClose, onSelect, initialCategory,
                   {product.hersteller && <span>{product.hersteller}</span>}
                   {product.nennweite_dn != null && <span>DN {product.nennweite_dn}</span>}
                   {product.belastungsklasse && <span>{product.belastungsklasse}</span>}
+                  {product.steifigkeitsklasse_sn && <span>SN {product.steifigkeitsklasse_sn}</span>}
+                  {product.werkstoff && <span>{product.werkstoff}</span>}
                 </div>
                 <div className="search-result-details">
                   <span>{formatPrice(product.vk_listenpreis_netto)}</span>

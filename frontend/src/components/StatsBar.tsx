@@ -1,4 +1,4 @@
-import type { AnalysisStep, CompatibilityIssue } from '../types'
+import type { AnalysisStep } from '../types'
 
 type Props = {
   totalPositions: number
@@ -6,7 +6,6 @@ type Props = {
   selectedCount: number
   serviceCount: number
   estimatedTotal: number
-  compatibilityIssues: CompatibilityIssue[]
   step: AnalysisStep
   onAcceptAllTop: () => void
 }
@@ -19,13 +18,10 @@ function formatMoney(value: number): string {
   }).format(value)
 }
 
-export function StatsBar({ totalPositions, matchedCount, selectedCount, serviceCount, estimatedTotal, compatibilityIssues, step, onAcceptAllTop }: Props) {
+export function StatsBar({ totalPositions, matchedCount, selectedCount, serviceCount, estimatedTotal, step, onAcceptAllTop }: Props) {
   if (totalPositions === 0) return null
 
   const matchPercent = totalPositions > 0 ? Math.round((matchedCount / totalPositions) * 100) : 0
-  const criticalCount = compatibilityIssues.filter((i) => i.severity === 'KRITISCH').length
-  const warnCount = compatibilityIssues.filter((i) => i.severity === 'WARNUNG').length
-  const issueTotal = criticalCount + warnCount
   const materialCount = totalPositions - serviceCount
   const hasOpenPositions = step === 'done' && selectedCount < materialCount
 
@@ -67,20 +63,6 @@ export function StatsBar({ totalPositions, matchedCount, selectedCount, serviceC
         <span className="stat-value">{formatMoney(estimatedTotal)}</span>
         <span className="stat-label">Geschätzter Wert</span>
       </div>
-      {issueTotal > 0 && (
-        <>
-          <div className="stat-divider" />
-          <div className={`stat-item ${criticalCount > 0 ? 'stat-warning' : 'stat-warn-amber'}`}>
-            <span className="stat-value">
-              <span className="issue-pulse-dot" />
-              {issueTotal}
-            </span>
-            <span className="stat-label">
-              {criticalCount > 0 ? 'Warnungen' : 'Hinweise'}
-            </span>
-          </div>
-        </>
-      )}
       {hasOpenPositions && (
         <>
           <div className="stat-spacer" />
