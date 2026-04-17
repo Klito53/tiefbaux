@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only, selectinload
 
 from ..auth import get_current_user, require_admin
 from ..database import get_db
@@ -974,7 +974,35 @@ def _project_to_summary(p: LVProject, has_pending_inquiries: bool = False) -> Pr
 
 @router.get("/projects", response_model=list[ProjectSummary])
 def list_projects(q: str = "", db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[ProjectSummary]:
-    query = select(LVProject).order_by(LVProject.created_at.desc())
+    query = (
+        select(LVProject)
+        .options(
+            # Keep archive list query lightweight: avoid loading large JSON/text columns.
+            load_only(
+                LVProject.id,
+                LVProject.filename,
+                LVProject.project_name,
+                LVProject.projekt_nr,
+                LVProject.total_positions,
+                LVProject.billable_positions,
+                LVProject.service_positions,
+                LVProject.created_at,
+                LVProject.bauvorhaben,
+                LVProject.objekt_nr,
+                LVProject.submission_date,
+                LVProject.kunde_name,
+                LVProject.status,
+                LVProject.offer_pdf_path,
+                LVProject.assigned_user_id,
+                LVProject.last_editor_id,
+                LVProject.last_edited_at,
+            ),
+            # Avoid N+1 for names shown in archive.
+            selectinload(LVProject.assigned_user).load_only(User.id, User.name),
+            selectinload(LVProject.last_editor).load_only(User.id, User.name),
+        )
+        .order_by(LVProject.created_at.desc())
+    )
     if q:
         like_q = f"%{q}%"
         query = query.where(

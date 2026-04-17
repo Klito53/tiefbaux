@@ -334,30 +334,6 @@ body {
   vertical-align: middle;
 }
 
-.stat-spacer { flex: 1; }
-
-.btn-accept-all {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  background: var(--accent-light);
-  color: var(--accent-text);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 150ms ease;
-  white-space: nowrap;
-}
-.btn-accept-all:hover {
-  background: var(--accent);
-  color: white;
-  box-shadow: var(--shadow-sm);
-}
-
 /* ─── Workspace Grid ─── */
 .workspace {
   display: grid;
@@ -5958,6 +5934,19 @@ body {
   font-size: 1rem;
   font-weight: 600;
   color: var(--ink-900);
+}
+.admin-add-user-btn {
+  width: auto;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  box-shadow: none;
+}
+.admin-add-user-btn:hover:not(:disabled) {
+  transform: none;
 }
 .admin-create-form {
   background: var(--bg-soft);

@@ -103,7 +103,7 @@ export function AdminPanel() {
       <section className="admin-section">
         <div className="admin-section-header">
           <h2>Benutzerverwaltung</h2>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowCreateForm(true)}>
+          <button className="btn btn-primary btn-sm admin-add-user-btn" onClick={() => setShowCreateForm(true)}>
             Neuer Benutzer
           </button>
         </div>

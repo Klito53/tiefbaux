@@ -171,8 +171,6 @@ function AuthenticatedApp({ user, isAdmin, onLogout }: { user: User; isAdmin: bo
                 selectedCount={analysis.selectedCount}
                 serviceCount={analysis.serviceCount}
                 estimatedTotal={analysis.estimatedTotal}
-                step={analysis.step}
-                onAcceptAllTop={analysis.handleAcceptAllTop}
               />
 
               <section className="workspace">

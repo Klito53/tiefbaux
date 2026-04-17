@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, deleteProject, fetchProjects } from '../api'
 import type { ProjectSummary } from '../types'
 
@@ -19,8 +19,10 @@ export function ProjectArchive({ onLoadProject }: Props) {
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const didInitialLoad = useRef(false)
 
   const loadProjects = useCallback(async (q?: string) => {
+    setLoading(true)
     try {
       const data = await fetchProjects(q || undefined)
       setProjects(data)
@@ -32,10 +34,15 @@ export function ProjectArchive({ onLoadProject }: Props) {
   }, [])
 
   useEffect(() => {
-    loadProjects()
-  }, [loadProjects])
-
-  useEffect(() => {
+    if (!didInitialLoad.current) {
+      didInitialLoad.current = true
+      loadProjects()
+      return
+    }
+    if (!searchTerm.trim()) {
+      loadProjects()
+      return
+    }
     const timer = setTimeout(() => {
       loadProjects(searchTerm)
     }, 300)

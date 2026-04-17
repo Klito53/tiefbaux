@@ -895,17 +895,6 @@ export function useAnalysis() {
     setShowExportDialog(false)
   }, [])
 
-  const handleAcceptAllTop = useCallback(() => {
-    const dlIds = new Set(positions.filter(p => p.position_type === 'dienstleistung').map(p => p.id))
-    const defaults: Record<string, string[]> = {}
-    positionSuggestions.forEach((entry) => {
-      if (entry.suggestions.length > 0 && !dlIds.has(entry.position_id)) {
-        defaults[entry.position_id] = [entry.suggestions[0].artikel_id]
-      }
-    })
-    setSelectedArticleIds(defaults)
-  }, [positionSuggestions, positions])
-
   const handleLoadProject = useCallback(async (loadProjectId: number) => {
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -1212,7 +1201,6 @@ export function useAnalysis() {
     handleExportCancel,
     handleLoadProject,
     handleReset,
-    handleAcceptAllTop,
     handleUndo,
     handleRejectSuggestion,
     handlePriceAdjustmentChange,

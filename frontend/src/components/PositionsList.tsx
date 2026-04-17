@@ -192,26 +192,6 @@ export function PositionsList({
 
       {positions.length > 0 && (
         <>
-          <div className="positions-summary">
-            <span className="summary-total">{positions.length} Positionen</span>
-            <span className="summary-dot" />
-            <span className="summary-matched">{assignedCount} zugeordnet</span>
-            <span className="summary-dot" />
-            <span className="summary-open">{openCount} offen</span>
-            {rejectedCount > 0 && (
-              <>
-                <span className="summary-dot" />
-                <span className="summary-rejected">{rejectedCount} abgelehnt</span>
-              </>
-            )}
-            {serviceCount > 0 && (
-              <>
-                <span className="summary-dot" />
-                <span className="summary-service">{serviceCount} Dienstleistung</span>
-              </>
-            )}
-          </div>
-
           <div className="filter-chips">
             {filterSet.map((mode) => (
               <button
