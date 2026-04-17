@@ -139,7 +139,7 @@ export function SuggestionsPanel({
       <div className="panel-header">
         <div className="panel-number">3</div>
         <div>
-          <h2>Artikelvorschläge</h2>
+          <h2>Lieferantenanfragen</h2>
           <p className="panel-copy">
             {activePosition
               ? `Vorschläge für Position ${activePosition.ordnungszahl}`
@@ -154,7 +154,7 @@ export function SuggestionsPanel({
             <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" stroke="currentColor" strokeWidth="1.5" />
             <rect x="9" y="3" width="6" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
           </svg>
-          <p>Wählen Sie eine Position, um passende Artikel zu sehen.</p>
+          <p>Lieferantenanfragen sind verfügbar, sobald ein Projekt geladen ist.</p>
         </div>
       )}
 

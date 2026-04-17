@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { createSupplierOffer, syncDemoInbox, updateInquiryStatus } from '../api'
+import { createSupplierOffer, syncDemoInbox } from '../api'
 import { InquiryReviewScreen } from './InquiryReviewScreen'
 import type { InboxSyncResult, LVPosition, SupplierInquiry } from '../types'
 
@@ -132,12 +132,7 @@ export function InquiryPanel({ inquiries, positions, projectId, onRefreshInquiri
     return (
       <section className="panel inquiry-panel">
         <div className="panel-header">
-          <div className="panel-number">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="1.5" />
-              <polyline points="22,6 12,13 2,6" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </div>
+          <div className="panel-number">3</div>
           <div>
             <h2>Lieferantenanfragen prüfen</h2>
             <p className="panel-copy">{pendingInquiries.length} vorgemerkt</p>
@@ -161,12 +156,7 @@ export function InquiryPanel({ inquiries, positions, projectId, onRefreshInquiri
     return (
       <section className="panel inquiry-panel">
         <div className="panel-header">
-          <div className="panel-number">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" strokeWidth="1.5" />
-              <polyline points="22,6 12,13 2,6" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </div>
+          <div className="panel-number">3</div>
           <div>
             <h2>Lieferantenanfragen</h2>
             <p className="panel-copy">Keine offenen Anfragen für dieses Projekt.</p>

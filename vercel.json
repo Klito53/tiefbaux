@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "experimentalServices": {
+    "web": {
+      "entrypoint": "frontend",
+      "routePrefix": "/"
+    },
+    "api": {
+      "entrypoint": "backend/main.py",
+      "routePrefix": "/backend",
+      "framework": "fastapi",
+      "includeFiles": [
+        "TiefbauX_Dummy_Datenbank_v2.xlsx - Artikel.csv",
+        "backend/offers/**",
+        "backend/uploads/**"
+      ]
+    }
+  }
+}
+

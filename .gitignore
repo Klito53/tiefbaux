@@ -39,3 +39,4 @@ output_review_offer*
 
 # Excel
 *.xlsx
+.vercel

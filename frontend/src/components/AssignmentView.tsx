@@ -24,6 +24,47 @@ function extractSnFromText(text: string): number | null {
   return match ? parseInt(match[1], 10) : null
 }
 
+function normalizeOZForSearch(oz: string): string {
+  return oz
+    .split('.')
+    .map((part) => {
+      const normalized = part.replace(/^0+/, '')
+      return normalized.length > 0 ? normalized : '0'
+    })
+    .join('.')
+}
+
+function buildOriginalPdfViewerUrl(projectId: number, position: LVPosition): string {
+  const base = getProjectPdfUrl(projectId)
+  const page = Math.max(1, position.source_page ?? 1)
+  const hash = new URLSearchParams()
+  hash.set('page', String(page))
+  hash.set('zoom', 'page-width')
+  hash.set('pagemode', 'none')
+  hash.set('toolbar', '0')
+  hash.set('navpanes', '0')
+  hash.set('scrollbar', '0')
+
+  // Improve jump precision inside the page: search first by OZ, then by short description prefix.
+  const searchTerms: string[] = []
+  if (position.ordnungszahl) {
+    searchTerms.push(position.ordnungszahl)
+    searchTerms.push(normalizeOZForSearch(position.ordnungszahl))
+  }
+  const descPrefix = position.description
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/[,.–-]/)[0]
+    .trim()
+  if (descPrefix.length > 0) {
+    searchTerms.push(descPrefix.slice(0, 64))
+  }
+  const search = searchTerms.find((term) => term.length > 0)
+  if (search) hash.set('search', search)
+
+  return `${base}#${hash.toString()}`
+}
+
 function shouldShowNormBadge(_position: LVPosition, suggestion: ProductSuggestion): boolean {
   if (!suggestion.norm) return false
   return true
@@ -1115,8 +1156,8 @@ export function AssignmentView({
           {showOriginalPdf && projectId && (
             <div className="original-lv-panel">
               <iframe
-                key={currentPosition.ordnungszahl}
-                src={`${getProjectPdfUrl(projectId)}#page=${currentPosition.source_page ?? 1}`}
+                key={`${currentPosition.ordnungszahl}-${currentPosition.source_page ?? 1}`}
+                src={buildOriginalPdfViewerUrl(projectId, currentPosition)}
                 className="original-lv-iframe"
                 title="Original LV"
               />

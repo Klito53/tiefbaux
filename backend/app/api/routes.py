@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -67,6 +67,8 @@ import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = _BACKEND_ROOT.parent
 
 
 def _touch_project_editor(project: LVProject, user: User) -> None:
@@ -78,6 +80,7 @@ def _touch_project_editor(project: LVProject, user: User) -> None:
 router = APIRouter(prefix="/api", tags=["tiefbaux"])
 
 PENDING_INQUIRY_STATUSES = ("offen", "angefragt")
+_INQUIRY_PROGRESS_STATUSES = ("angefragt", "angebot_erhalten")
 
 
 def _display_supplier_email(real_email: str | None) -> str:
@@ -88,15 +91,11 @@ def _display_supplier_email(real_email: str | None) -> str:
 
 
 def _count_pending_project_inquiries(project_id: int, db: Session) -> int:
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(SupplierInquiry)
-            .where(SupplierInquiry.project_id == project_id)
-            .where(SupplierInquiry.status.in_(PENDING_INQUIRY_STATUSES))
-        )
-        or 0
-    )
+    inquiries = db.execute(
+        select(SupplierInquiry).where(SupplierInquiry.project_id == project_id)
+    ).scalars().all()
+    effective = _filter_superseded_open_inquiries(inquiries)
+    return sum(1 for inq in effective if inq.status in PENDING_INQUIRY_STATUSES)
 
 
 def _derive_effective_project_status(project: LVProject, has_pending_inquiries: bool) -> str:
@@ -107,12 +106,121 @@ def _derive_effective_project_status(project: LVProject, has_pending_inquiries: 
     return "neu" if (project.status or "neu") == "neu" else "offen"
 
 
+def _inquiry_effective_key(inq: SupplierInquiry) -> tuple[int | None, str | None, int, str | None]:
+    return (inq.project_id, inq.position_id, inq.supplier_id, inq.ordnungszahl)
+
+
+def _filter_superseded_open_inquiries(inquiries: list[SupplierInquiry]) -> list[SupplierInquiry]:
+    progressed_keys = {
+        _inquiry_effective_key(inq)
+        for inq in inquiries
+        if inq.status in _INQUIRY_PROGRESS_STATUSES
+    }
+    filtered: list[SupplierInquiry] = []
+    for inq in inquiries:
+        if inq.status == "offen" and _inquiry_effective_key(inq) in progressed_keys:
+            continue
+        filtered.append(inq)
+    return filtered
+
+
+def _uploads_runtime_dir() -> Path:
+    if os.getenv("VERCEL") == "1":
+        return Path("/tmp/tiefbaux/uploads")
+    return _BACKEND_ROOT / "uploads"
+
+
+def _offers_runtime_dir(project_id: int) -> Path:
+    if os.getenv("VERCEL") == "1":
+        return Path("/tmp/tiefbaux/offers") / str(project_id)
+    return _BACKEND_ROOT / "offers" / str(project_id)
+
+
+def _resolve_stored_file_path(
+    stored_path: str | None,
+    *,
+    kind: str,
+    project_id: int | None = None,
+) -> Path | None:
+    """Resolve stored file paths across local/dev/live environments.
+
+    Supports:
+    - old absolute macOS paths (e.g. /Users/.../backend/uploads/...)
+    - relative persisted paths (backend/uploads/...)
+    - current runtime absolute paths (e.g. /var/task/backend/uploads/...)
+    """
+    if not stored_path:
+        return None
+
+    backend_root = _BACKEND_ROOT
+    project_root = _PROJECT_ROOT
+    raw = str(stored_path)
+    normalized = raw.replace("\\", "/")
+    source = Path(raw)
+    candidates: list[Path] = [source]
+
+    if not source.is_absolute():
+        candidates.append(backend_root / source)
+        candidates.append(project_root / source)
+
+    if kind == "upload":
+        markers = ("/backend/uploads/", "/uploads/")
+        for marker in markers:
+            if marker not in normalized:
+                continue
+            rel = normalized.split(marker, 1)[1].lstrip("/")
+            candidates.append(backend_root / "uploads" / rel)
+            candidates.append(project_root / "backend" / "uploads" / rel)
+            candidates.append(project_root / "uploads" / rel)
+            candidates.append(Path("/tmp/tiefbaux/uploads") / rel)
+        candidates.append(backend_root / "uploads" / source.name)
+        candidates.append(project_root / "uploads" / source.name)
+        candidates.append(project_root / "backend" / "uploads" / source.name)
+        candidates.append(Path("/tmp/tiefbaux/uploads") / source.name)
+    elif kind == "offer":
+        markers = ("/backend/offers/", "/offers/")
+        for marker in markers:
+            if marker not in normalized:
+                continue
+            rel = normalized.split(marker, 1)[1].lstrip("/")
+            candidates.append(backend_root / "offers" / rel)
+            candidates.append(project_root / "backend" / "offers" / rel)
+            candidates.append(project_root / "offers" / rel)
+            candidates.append(Path("/tmp/tiefbaux/offers") / rel)
+        if project_id is not None:
+            candidates.append(backend_root / "offers" / str(project_id) / "angebot.pdf")
+            candidates.append(project_root / "backend" / "offers" / str(project_id) / "angebot.pdf")
+            candidates.append(project_root / "offers" / str(project_id) / "angebot.pdf")
+            candidates.append(Path("/tmp/tiefbaux/offers") / str(project_id) / "angebot.pdf")
+    else:
+        return None
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    logger.warning(
+        "Stored file not found (kind=%s, stored_path=%s, project_id=%s, project_root=%s, candidates=%s)",
+        kind,
+        stored_path,
+        project_id,
+        project_root,
+        [str(c) for c in candidates],
+    )
+    return None
+
+
 def _enrich_from_pdf(positions: list[LVPosition], pdf_path: str | None) -> list[LVPosition]:
     """Enrich positions with raw_text and correct source_page from stored PDF."""
-    if not pdf_path or not os.path.exists(pdf_path):
+    resolved_pdf = _resolve_stored_file_path(pdf_path, kind="upload")
+    if not resolved_pdf:
         return positions
     try:
-        with open(pdf_path, "rb") as f:
+        with open(resolved_pdf, "rb") as f:
             pdf_bytes = f.read()
         from ..services.llm_parser import (
             _derive_description_from_raw_text,
@@ -328,20 +436,21 @@ async def parse_lv(file: UploadFile = File(...), db: Session = Depends(get_db), 
         positions = _fallback_parse(pdf_bytes)
 
     # Feature 8: Store PDF file on disk
-    uploads_dir = Path(settings.project_root) / "backend" / "uploads"
-    uploads_dir.mkdir(exist_ok=True)
+    uploads_dir = _uploads_runtime_dir()
+    uploads_dir.mkdir(parents=True, exist_ok=True)
     pdf_filename = f"{content_hash}.pdf"
-    pdf_path = str(uploads_dir / pdf_filename)
+    actual_pdf_path = uploads_dir / pdf_filename
+    stored_pdf_path = str(Path("uploads") / pdf_filename)
     try:
-        with open(pdf_path, "wb") as f:
+        with open(actual_pdf_path, "wb") as f:
             f.write(pdf_bytes)
     except Exception as exc:
         logger.warning("Failed to save PDF: %s", exc)
-        pdf_path = None
+        stored_pdf_path = None
 
     # Store for future duplicate detection
     try:
-        project = _store_project(db, content_hash, file.filename, positions, metadata, pdf_path)
+        project = _store_project(db, content_hash, file.filename, positions, metadata, stored_pdf_path)
         _touch_project_editor(project, current_user)
         db.commit()
         duplicate_info = DuplicateInfo(is_duplicate=False, project_id=project.id)
@@ -756,11 +865,11 @@ def export_offer(request: ExportOfferRequest, db: Session = Depends(get_db), cur
     if request.project_id:
         project = db.get(LVProject, request.project_id)
         if project:
-            offers_dir = Path(settings.project_root) / "backend" / "offers" / str(request.project_id)
+            offers_dir = _offers_runtime_dir(request.project_id)
             offers_dir.mkdir(parents=True, exist_ok=True)
             offer_path = offers_dir / "angebot.pdf"
             offer_path.write_bytes(pdf_bytes)
-            project.offer_pdf_path = str(offer_path)
+            project.offer_pdf_path = str(Path("offers") / str(request.project_id) / "angebot.pdf")
             project.status = "gerechnet"
             _touch_project_editor(project, current_user)
             db.commit()
@@ -1034,15 +1143,12 @@ def get_project_pdf(project_id: int, token: str | None = None, db: Session = Dep
     project = db.get(LVProject, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projekt nicht gefunden")
-    if not project.pdf_path or not os.path.exists(project.pdf_path):
+    resolved_pdf = _resolve_stored_file_path(project.pdf_path, kind="upload")
+    if not resolved_pdf:
         raise HTTPException(status_code=404, detail="PDF nicht verfügbar")
 
-    def _iter_file():
-        with open(project.pdf_path, "rb") as f:
-            yield f.read()
-
-    return StreamingResponse(
-        _iter_file(),
+    return FileResponse(
+        path=resolved_pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{project.filename or "lv.pdf"}"'},
     )
@@ -1056,15 +1162,12 @@ def get_project_offer_pdf(project_id: int, token: str | None = None, db: Session
     project = db.get(LVProject, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projekt nicht gefunden")
-    if not project.offer_pdf_path or not os.path.exists(project.offer_pdf_path):
+    resolved_offer = _resolve_stored_file_path(project.offer_pdf_path, kind="offer", project_id=project.id)
+    if not resolved_offer:
         raise HTTPException(status_code=404, detail="Angebots-PDF nicht verfügbar")
 
-    def _iter_file():
-        with open(project.offer_pdf_path, "rb") as f:
-            yield f.read()
-
-    return StreamingResponse(
-        _iter_file(),
+    return FileResponse(
+        path=resolved_offer,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="angebot-{project.projekt_nr or project.id}.pdf"'},
     )
@@ -1073,6 +1176,8 @@ def get_project_offer_pdf(project_id: int, token: str | None = None, db: Session
 # ---------------------------------------------------------------------------
 # Supplier & Inquiry endpoints
 # ---------------------------------------------------------------------------
+
+_INQUIRY_DUPLICATE_BLOCK_STATUSES = ("offen", "angefragt")
 
 
 def _supplier_to_response(s: Supplier) -> SupplierResponse:
@@ -1143,13 +1248,13 @@ def create_inquiry(data: InquiryCreateRequest, db: Session = Depends(get_db), cu
     if not supplier:
         raise HTTPException(status_code=404, detail="Lieferant nicht gefunden")
 
-    # Check for existing open inquiry for same position + supplier + project
+    # Check for existing draft/sent inquiry for same position + supplier + project
     if data.position_id:
         q = (
             select(SupplierInquiry)
             .where(SupplierInquiry.position_id == data.position_id)
             .where(SupplierInquiry.supplier_id == data.supplier_id)
-            .where(SupplierInquiry.status == "offen")
+            .where(SupplierInquiry.status.in_(_INQUIRY_DUPLICATE_BLOCK_STATUSES))
         )
         if data.project_id:
             q = q.where(SupplierInquiry.project_id == data.project_id)
@@ -1159,7 +1264,7 @@ def create_inquiry(data: InquiryCreateRequest, db: Session = Depends(get_db), cu
         if existing:
             raise HTTPException(
                 status_code=409,
-                detail="Für diese Position und diesen Lieferanten existiert bereits eine offene Anfrage",
+                detail="Für diese Position und diesen Lieferanten existiert bereits eine vorgemerkte oder gesendete Anfrage",
             )
 
     # Get project name for email
@@ -1213,7 +1318,7 @@ def create_inquiry(data: InquiryCreateRequest, db: Session = Depends(get_db), cu
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="Für diese Position und diesen Lieferanten existiert bereits eine offene Anfrage",
+            detail="Für diese Position und diesen Lieferanten existiert bereits eine vorgemerkte oder gesendete Anfrage",
         )
     db.refresh(inquiry)
 
@@ -1252,6 +1357,8 @@ def list_inquiries(
     q = q.order_by(SupplierInquiry.created_at.desc())
 
     inquiries = db.execute(q).scalars().all()
+    if project_id is not None:
+        inquiries = _filter_superseded_open_inquiries(inquiries)
     result = []
     for inq in inquiries:
         supplier = db.get(Supplier, inq.supplier_id)
@@ -1372,13 +1479,13 @@ def create_inquiry_batch(data: InquiryBatchCreateRequest, db: Session = Depends(
         reference_lines=reference_lines,
     )
 
-    # Find existing open inquiries for this position to prevent duplicates
+    # Find existing draft/sent inquiries for this position to prevent duplicates
     existing_supplier_ids: set[int] = set()
     if data.position_id:
         q = (
             select(SupplierInquiry.supplier_id)
             .where(SupplierInquiry.position_id == data.position_id)
-            .where(SupplierInquiry.status == "offen")
+            .where(SupplierInquiry.status.in_(_INQUIRY_DUPLICATE_BLOCK_STATUSES))
         )
         if data.project_id:
             q = q.where(SupplierInquiry.project_id == data.project_id)
@@ -1388,7 +1495,7 @@ def create_inquiry_batch(data: InquiryBatchCreateRequest, db: Session = Depends(
 
     results = []
     for supplier_id in data.supplier_ids:
-        # Skip if an open inquiry already exists for this position + supplier
+        # Skip if a draft/sent inquiry already exists for this position + supplier
         if supplier_id in existing_supplier_ids:
             continue
         supplier = db.get(Supplier, supplier_id)
@@ -1439,11 +1546,14 @@ def _build_supplier_bundles(
     project_id: int, db: Session
 ) -> tuple[str | None, dict[int, list[SupplierInquiry]]]:
     """Helper: load open inquiries for project and group by supplier."""
-    inquiries = db.execute(
+    project_inquiries = db.execute(
         select(SupplierInquiry)
         .where(SupplierInquiry.project_id == project_id)
-        .where(SupplierInquiry.status == "offen")
     ).scalars().all()
+    inquiries = [
+        inq for inq in _filter_superseded_open_inquiries(project_inquiries)
+        if inq.status == "offen"
+    ]
 
     project_name = None
     project = db.get(LVProject, project_id)

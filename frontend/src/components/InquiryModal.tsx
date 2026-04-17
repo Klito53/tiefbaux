@@ -42,10 +42,10 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
         .then(([s, existingInquiries]) => {
           setSuppliers(s)
 
-          // Find suppliers that already have an open inquiry for this position
+          // Find suppliers that already have a draft/sent inquiry for this position
           const alreadyInquired = new Set(
             existingInquiries
-              .filter(inq => inq.position_id === position.id && inq.status === 'offen')
+              .filter(inq => inq.position_id === position.id && (inq.status === 'offen' || inq.status === 'angefragt'))
               .map(inq => inq.supplier_id),
           )
           setAlreadyInquiredSupplierIds(alreadyInquired)
@@ -222,7 +222,7 @@ export function InquiryModal({ isOpen, onClose, position, projectName, projectId
                         <div className="inquiry-supplier-detail">
                           <span className="inquiry-supplier-name">
                             {s.name}
-                            {alreadyInquired && <span className="inquiry-already-badge">bereits angefragt</span>}
+                            {alreadyInquired && <span className="inquiry-already-badge">bereits vorgemerkt/gesendet</span>}
                             {!alreadyInquired && isMatch && <span className="inquiry-match-badge">passend</span>}
                           </span>
                           <span className="inquiry-supplier-email">{s.email}</span>

@@ -1,0 +1,17 @@
+.git
+.claude
+.pycache
+node_modules
+frontend/node_modules
+backend/.venv
+tmp
+output
+screenshots
+*.xlsx
+*.png
+*.bak
+tiefbaux.db
+!backend/uploads/
+!backend/uploads/**/*.pdf
+!backend/offers/
+!backend/offers/**/*.pdf

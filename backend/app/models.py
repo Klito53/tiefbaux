@@ -25,7 +25,7 @@ class Product(Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    artikel_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    artikel_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     ean_gtin: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     hersteller: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     hersteller_artikelnr: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -64,8 +64,8 @@ class Product(Base):
     lager_gesamt: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     lieferant_1_lieferzeit_tage: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[Optional[str]] = mapped_column(String(32), index=True, nullable=True)
-    ersatz_artikel_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    nachfolger_artikel_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    ersatz_artikel_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    nachfolger_artikel_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
 Index("ix_products_category_dn", Product.kategorie, Product.unterkategorie, Product.nennweite_dn)
@@ -256,7 +256,7 @@ class ManualOverride(Base):
     category: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     dn: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     material: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    chosen_artikel_id: Mapped[str] = mapped_column(String(32), index=True)
+    chosen_artikel_id: Mapped[str] = mapped_column(String(64), index=True)
     override_count: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

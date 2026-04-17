@@ -6,6 +6,7 @@ import imaplib
 import io
 import json
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from .pdf_parser import extract_positions_from_pdf
 logger = logging.getLogger(__name__)
 
 PENDING_INQUIRY_STATUSES = ("offen", "angefragt")
+_INQUIRY_PROGRESS_STATUSES = ("angefragt", "angebot_erhalten")
 
 _INQ_REF_PATTERN = re.compile(r"TBX-INQ[:#\s-]*(\d+)", re.IGNORECASE)
 _PROJ_OZ_REF_PATTERN = re.compile(
@@ -54,6 +56,28 @@ _ORIGINAL_RECIPIENT_PATTERN = re.compile(
 )
 _GENERIC_EMAIL_PATTERN = re.compile(r"\b([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})\b", re.IGNORECASE)
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}", re.IGNORECASE)
+_NON_LV_PDF_HINTS = (
+    "invoice",
+    "receipt",
+    "statement",
+    "billing",
+    "stripe",
+    "zahlungsbeleg",
+    "beleg",
+    "rechnung",
+    "abrechnung",
+    "quittung",
+)
+_LV_PDF_HINTS = (
+    "lv",
+    "leistungsverzeichnis",
+    "ausschreibung",
+    "anfrage",
+    "bauprojekt",
+    "bauvorhaben",
+    "baustoff",
+    "position",
+)
 
 _sync_lock = threading.Lock()
 _sync_state: dict[str, object] = {
@@ -286,16 +310,30 @@ def _parse_delivery_hint(text: str) -> str | None:
     return f"{match.group(1)} {match.group(2)}"
 
 
+def _inquiry_effective_key(inq: SupplierInquiry) -> tuple[int | None, str | None, int, str | None]:
+    return (inq.project_id, inq.position_id, inq.supplier_id, inq.ordnungszahl)
+
+
+def _filter_superseded_open_inquiries(inquiries: list[SupplierInquiry]) -> list[SupplierInquiry]:
+    progressed_keys = {
+        _inquiry_effective_key(inq)
+        for inq in inquiries
+        if inq.status in _INQUIRY_PROGRESS_STATUSES
+    }
+    filtered: list[SupplierInquiry] = []
+    for inq in inquiries:
+        if inq.status == "offen" and _inquiry_effective_key(inq) in progressed_keys:
+            continue
+        filtered.append(inq)
+    return filtered
+
+
 def _count_pending_project_inquiries(project_id: int, db: Session) -> int:
-    return int(
-        db.scalar(
-            select(func.count())
-            .select_from(SupplierInquiry)
-            .where(SupplierInquiry.project_id == project_id)
-            .where(SupplierInquiry.status.in_(PENDING_INQUIRY_STATUSES))
-        )
-        or 0
-    )
+    inquiries = db.execute(
+        select(SupplierInquiry).where(SupplierInquiry.project_id == project_id)
+    ).scalars().all()
+    effective = _filter_superseded_open_inquiries(inquiries)
+    return sum(1 for inq in effective if inq.status in PENDING_INQUIRY_STATUSES)
 
 
 def _derive_effective_project_status(project: LVProject, has_pending_inquiries: bool) -> str:
@@ -414,7 +452,10 @@ def _store_new_project(
 
 
 def _store_uploaded_pdf(content_hash: str, data: bytes) -> str | None:
-    uploads_dir = Path(settings.project_root) / "backend" / "uploads"
+    if os.getenv("VERCEL") == "1":
+        uploads_dir = Path("/tmp/tiefbaux/uploads")
+    else:
+        uploads_dir = Path(settings.project_root) / "backend" / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = uploads_dir / f"{content_hash}.pdf"
     try:
@@ -422,21 +463,28 @@ def _store_uploaded_pdf(content_hash: str, data: bytes) -> str | None:
     except Exception:
         logger.exception("Failed to save inbound LV attachment")
         return None
-    return str(pdf_path)
+    return str(Path("uploads") / f"{content_hash}.pdf")
 
 
 def _classify_email(subject: str, body: str, attachments: list[_Attachment]) -> str:
-    text = f"{subject}\n{body}".lower()
+    attachment_names = " ".join(att.filename for att in attachments if att.filename)
+    text = f"{subject}\n{body}\n{attachment_names}".lower()
     has_pdf = any(att.is_pdf for att in attachments)
     has_offer_keyword = any(keyword.lower() in text for keyword in settings.inbound_email_offer_keywords)
     has_new_lv_keyword = any(keyword.lower() in text for keyword in settings.inbound_email_new_lv_keywords)
+    has_non_lv_pdf_hint = any(hint in text for hint in _NON_LV_PDF_HINTS)
+    has_lv_pdf_hint = any(hint in text for hint in _LV_PDF_HINTS)
     has_ref = "tbx-inq" in text or "tbx-proj" in text
 
     if has_ref or has_offer_keyword:
         return "offer"
-    if has_pdf and has_new_lv_keyword:
+    if not has_pdf:
+        return "ignored"
+    if has_non_lv_pdf_hint and not has_new_lv_keyword and not has_ref:
+        return "ignored"
+    if has_new_lv_keyword:
         return "new_lv"
-    if has_pdf:
+    if has_lv_pdf_hint:
         return "new_lv"
     return "ignored"
 
