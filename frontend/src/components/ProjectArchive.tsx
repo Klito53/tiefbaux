@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { deleteProject, fetchProjects } from '../api'
+import { ApiError, deleteProject, fetchProjects } from '../api'
 import type { ProjectSummary } from '../types'
 
 type Props = {
@@ -18,6 +18,7 @@ export function ProjectArchive({ onLoadProject }: Props) {
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const loadProjects = useCallback(async (q?: string) => {
     try {
@@ -46,11 +47,15 @@ export function ProjectArchive({ onLoadProject }: Props) {
     if (!window.confirm(`"${name}" wirklich löschen?`)) return
 
     setDeletingId(project.id)
+    setDeleteError(null)
     try {
       await deleteProject(project.id)
       setProjects((prev) => prev.filter((p) => p.id !== project.id))
-    } catch {
-      // keep in list on error
+    } catch (error) {
+      const message = error instanceof ApiError
+        ? error.message
+        : 'Projekt konnte nicht gelöscht werden.'
+      setDeleteError(message)
     } finally {
       setDeletingId(null)
     }
@@ -83,6 +88,7 @@ export function ProjectArchive({ onLoadProject }: Props) {
           onChange={(e) => setSearchTerm(e.target.value)}
         />
       </div>
+      {deleteError && <p className="archive-error">{deleteError}</p>}
 
       {projects.length === 0 ? (
         <p className="archive-empty">

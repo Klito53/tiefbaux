@@ -6,7 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1066,8 +1066,54 @@ def delete_project(project_id: int, db: Session = Depends(get_db), current_user:
     project = db.get(LVProject, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projekt nicht gefunden")
-    db.delete(project)
-    db.commit()
+
+    # Resolve file paths before rows are deleted.
+    resolved_project_pdf = _resolve_stored_file_path(project.pdf_path, kind="upload")
+    resolved_offer_pdf = _resolve_stored_file_path(project.offer_pdf_path, kind="offer", project_id=project.id)
+
+    try:
+        # Remove dependent records not covered by ORM cascade on LVProject.
+        inquiry_ids = db.execute(
+            select(SupplierInquiry.id).where(SupplierInquiry.project_id == project_id)
+        ).scalars().all()
+
+        if inquiry_ids:
+            db.execute(
+                delete(SupplierOffer).where(SupplierOffer.inquiry_id.in_(inquiry_ids))
+            )
+
+        db.execute(
+            delete(SupplierOffer).where(SupplierOffer.project_id == project_id)
+        )
+        db.execute(
+            delete(SupplierInquiry).where(SupplierInquiry.project_id == project_id)
+        )
+        # Keep tenders but unlink deleted project reference.
+        db.execute(
+            update(Tender)
+            .where(Tender.project_id == project_id)
+            .values(project_id=None)
+        )
+
+        db.delete(project)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        logger.warning("Failed to delete project %s due to FK constraints: %s", project_id, exc)
+        raise HTTPException(
+            status_code=409,
+            detail="Projekt konnte nicht gelöscht werden (verknüpfte Daten).",
+        )
+
+    # Cleanup files best-effort (DB delete already committed).
+    for file_path in (resolved_project_pdf, resolved_offer_pdf):
+        if not file_path:
+            continue
+        try:
+            file_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning("Failed to remove project file %s: %s", file_path, exc)
+
     return {"ok": True}
 
 

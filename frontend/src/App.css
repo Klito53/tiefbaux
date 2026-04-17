@@ -244,6 +244,16 @@ body {
   font-size: 0.95rem;
 }
 
+.archive-error {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #e5b7b2;
+  border-radius: 8px;
+  background: #fff6f5;
+  color: #b93a2f;
+  font-size: 0.88rem;
+}
+
 /* ─── Duplicate Banner ─── */
 .duplicate-banner {
   padding: 10px 20px;
