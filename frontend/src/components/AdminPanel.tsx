@@ -5,7 +5,10 @@ import type { ProjectSummary, User } from '../types'
 export function AdminPanel() {
   const [users, setUsers] = useState<User[]>([])
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [usersError, setUsersError] = useState<string | null>(null)
+  const [projectsError, setProjectsError] = useState<string | null>(null)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
 
@@ -17,9 +20,41 @@ export function AdminPanel() {
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
-    Promise.all([fetchUsers(), fetchProjects()])
-      .then(([u, p]) => { setUsers(u); setProjects(p) })
-      .finally(() => setLoading(false))
+    let active = true
+
+    fetchUsers()
+      .then((u) => {
+        if (!active) return
+        setUsers(u)
+        setUsersError(null)
+      })
+      .catch((err) => {
+        if (!active) return
+        setUsers([])
+        setUsersError(err instanceof Error ? err.message : 'Benutzer konnten nicht geladen werden.')
+      })
+      .finally(() => {
+        if (!active) return
+        setLoadingUsers(false)
+      })
+
+    fetchProjects()
+      .then((p) => {
+        if (!active) return
+        setProjects(p)
+        setProjectsError(null)
+      })
+      .catch((err) => {
+        if (!active) return
+        setProjects([])
+        setProjectsError(err instanceof Error ? err.message : 'Projekte konnten nicht geladen werden.')
+      })
+      .finally(() => {
+        if (!active) return
+        setLoadingProjects(false)
+      })
+
+    return () => { active = false }
   }, [])
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -58,8 +93,6 @@ export function AdminPanel() {
         : p
     ))
   }
-
-  if (loading) return <div className="admin-loading">Lade Verwaltung...</div>
 
   const activeUsers = users.filter(u => u.active)
   const openProjects = projects.filter(p => p.status !== 'gerechnet')
@@ -105,7 +138,17 @@ export function AdminPanel() {
             </tr>
           </thead>
           <tbody>
-            {users.map(user => (
+            {loadingUsers && (
+              <tr>
+                <td colSpan={5} className="admin-empty">Benutzer werden geladen…</td>
+              </tr>
+            )}
+            {!loadingUsers && usersError && (
+              <tr>
+                <td colSpan={5} className="admin-empty">{usersError}</td>
+              </tr>
+            )}
+            {!loadingUsers && !usersError && users.map(user => (
               <tr key={user.id} className={user.active ? '' : 'admin-inactive'}>
                 <td>
                   {editingUser?.id === user.id ? (
@@ -156,6 +199,11 @@ export function AdminPanel() {
                 </td>
               </tr>
             ))}
+            {!loadingUsers && !usersError && users.length === 0 && (
+              <tr>
+                <td colSpan={5} className="admin-empty">Keine Benutzer gefunden</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </section>
@@ -176,7 +224,13 @@ export function AdminPanel() {
             </tr>
           </thead>
           <tbody>
-            {openProjects.map(p => (
+            {loadingProjects && (
+              <tr><td colSpan={4} className="admin-empty">Projekte werden geladen…</td></tr>
+            )}
+            {!loadingProjects && projectsError && (
+              <tr><td colSpan={4} className="admin-empty">{projectsError}</td></tr>
+            )}
+            {!loadingProjects && !projectsError && openProjects.map(p => (
               <tr key={p.id}>
                 <td>
                   <div className="admin-project-name">{p.bauvorhaben ?? p.project_name ?? p.filename ?? `Projekt #${p.id}`}</div>
@@ -219,7 +273,7 @@ export function AdminPanel() {
                 </td>
               </tr>
             ))}
-            {openProjects.length === 0 && (
+            {!loadingProjects && !projectsError && openProjects.length === 0 && (
               <tr><td colSpan={4} className="admin-empty">Keine offenen Projekte</td></tr>
             )}
           </tbody>
