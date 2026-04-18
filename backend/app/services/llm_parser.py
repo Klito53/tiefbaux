@@ -790,26 +790,29 @@ def _inherit_reference_context(positions: list[LVPosition]) -> list[LVPosition]:
 def _merge_heuristic_parameters(position: LVPosition, heuristic_params: TechnicalParameters) -> TechnicalParameters:
     merged = position.parameters.model_dump()
     is_reference = _is_reference_position(position)
-    category_conflict = (
-        heuristic_params.product_category
-        and merged.get("product_category")
-        and heuristic_params.product_category != merged.get("product_category")
-    )
-    subcategory_conflict = (
-        heuristic_params.product_subcategory
-        and merged.get("product_subcategory")
-        and heuristic_params.product_subcategory != merged.get("product_subcategory")
-    )
 
-    if is_reference or category_conflict or subcategory_conflict:
+    if is_reference:
         for field in _STRUCTURAL_PARAM_FIELDS:
             value = getattr(heuristic_params, field)
             if value not in (None, "", []):
                 merged[field] = value
     else:
-        for key, value in heuristic_params.model_dump().items():
-            if merged.get(key) is None and value not in (None, "", []):
-                merged[key] = value
+        # Backfill-only: never overwrite existing LLM/DB values with heuristic guesses.
+        # Prior "conflict override" branch misclassified valid positions (e.g. a Kanalrohr
+        # mentioning "Rohrende mit Muffe" got rewritten to Formstücke/Muffe by the regex).
+        heur_dump = heuristic_params.model_dump()
+        for key, value in heur_dump.items():
+            if merged.get(key) is not None or value in (None, "", []):
+                continue
+            # Only backfill product_subcategory when the heuristic's category
+            # agrees with the existing category — otherwise a Kanalrohr gets a
+            # "Muffe" subcategory and the matcher mis-scores it as a fitting.
+            if key == "product_subcategory":
+                existing_cat = merged.get("product_category")
+                heur_cat = heur_dump.get("product_category")
+                if existing_cat and heur_cat and existing_cat != heur_cat:
+                    continue
+            merged[key] = value
 
     return TechnicalParameters(**merged)
 

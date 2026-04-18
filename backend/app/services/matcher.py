@@ -484,7 +484,7 @@ def _detect_product_type(text: str, category: str | None = None, subcategory: st
     priority_types = [
         "absperrschieber", "rueckstauverschluss", "anschluss", "sanierungsstutzen", "rohrkupplung", "revisionsschacht", "kabelschacht", "laternenhuelse", "schachtring",
         "revisionsstück", "ausgleichsring", "rost", "schmutzfangeimer", "einlaufkasten", "stirnwand",
-        "bogen", "abzweig", "muffe", "uebergangsstueck", "passstueck", "reduzierstück", "schachtfutter", "konus",
+        "bogen", "abzweig", "schachtfutter", "muffe", "uebergangsstueck", "passstueck", "reduzierstück", "konus",
         "schachtboden", "schachtrohr", "abdeckung", "ablauf", "rinne",
         "auslauf", "dichtung", "kappe", "zubehoer",
     ]
@@ -684,17 +684,30 @@ def _has_hard_conflict(
     _INSTALLATION_NORM_IDS = {"1610", "18318", "18186", "18134", "1053"}
     is_installation_norm = any(n in required_norm for n in _INSTALLATION_NORM_IDS) if required_norm else False
 
+    # PP/PVC Kanalrohr product-norm families — any two of these are treated as the
+    # same rohr class (homogen, strukturiert, PP-MD, PVC-U), so a cross-family match
+    # is a score penalty, not a hard reject.
+    _KANAL_NORM_IDS = ("1401", "1852", "13476", "14758", "1437", "12666")
+
     if expected_type == "rohr" and required_material in {"beton", "pvc", "pp", "pe"}:
         if product_material and product_material != required_material:
             return True
         if required_norm and product_norm and not is_installation_norm and "9969" not in required_norm and required_norm not in product_norm and product_norm not in required_norm:
-            return True
+            both_kanal = (
+                any(n in required_norm for n in _KANAL_NORM_IDS)
+                and any(n in product_norm for n in _KANAL_NORM_IDS)
+            )
+            if not both_kanal:
+                return True
         required_area = _normalize(position.parameters.application_area)
         product_area = _normalize(product.einsatzbereich)
         if required_area and product_area and required_area not in product_area and product_area not in required_area:
             return True
 
-    if expected_type in {"bogen", "abzweig", "reduzierstück", "revisionsstück", "muffe", "anschluss", "schachtfutter"} and required_material in {"beton", "pvc", "pp", "pe"}:
+    # Schachtfutter are elastomer-sealed connectors — the outer shell material (PP
+    # or PVC-U) is interchangeable as long as the seal fits the DN. Keep them out
+    # of the strict material-match list.
+    if expected_type in {"bogen", "abzweig", "reduzierstück", "revisionsstück", "muffe", "anschluss"} and required_material in {"beton", "pvc", "pp", "pe"}:
         if product_material and product_material != required_material:
             return True
 
@@ -810,9 +823,12 @@ def _has_hard_conflict(
         return True
 
     # ── Universal material hard conflict ──
+    # Schachtfutter connect a pipe to a manhole wall via an elastomer seal; the
+    # seal's DN decides compatibility, not the shell material. Skip the hard
+    # reject so PVC-U Schachtfutter remain candidates for a PP pipe request.
     req_fam = _material_family(position.parameters.material)
     prod_fam = _material_family(product.werkstoff)
-    if req_fam and prod_fam and req_fam != prod_fam:
+    if expected_type != "schachtfutter" and req_fam and prod_fam and req_fam != prod_fam:
         return True
     # Steinzeug/Guss positions: products without werkstoff are definitely not
     # Steinzeug or Guss — reject rather than letting them slip through.
@@ -1204,6 +1220,15 @@ def _material_score(required_material: str | None, product: Product) -> tuple[fl
     return 0.0, []
 
 
+def _norm_base(norm: str) -> str:
+    # Strip trailing "-<digits>" part suffix (DIN EN 1852-1 -> DIN EN 1852) and
+    # any amendment letters so that "DIN EN 13476-2:2018-08" and "DIN EN 13476"
+    # collapse onto a shared base for matching purposes.
+    base = re.split(r"[:+]", norm, maxsplit=1)[0]
+    base = re.sub(r"-\d+[a-z]?$", "", base).strip()
+    return _normalize(base)
+
+
 def _norm_score(required_norm: str | None, product: Product) -> tuple[float, list[str]]:
     if not required_norm:
         return 0.0, []
@@ -1216,6 +1241,14 @@ def _norm_score(required_norm: str | None, product: Product) -> tuple[float, lis
 
     if required and required in product_norm:
         return 12.0, [f"Norm passt ({product.norm_primaer})"]
+
+    # Accept part-number differences on the same base norm: DIN EN 1852-1
+    # (LV) vs DIN EN 1852 (product) should match — same family, just the
+    # part suffix not tracked on the product record.
+    req_base = _norm_base(required_norm)
+    prod_base = _norm_base(product.norm_primaer or "")
+    if req_base and prod_base and (req_base == prod_base or req_base in prod_base or prod_base in req_base):
+        return 10.0, [f"Norm passt ({product.norm_primaer})"]
 
     # Norm explicitly specified but product has a different norm
     return -15.0, [f"Norm abweichend ({product.norm_primaer} ≠ {required_norm})"]
@@ -1647,9 +1680,51 @@ def suggest_products_for_position(
 
     # Require category match + at least one technical parameter match to pass
     min_score = _minimum_score(position, category, position_product_type)
-    final_candidates = [
-        entry for entry in sorted(grouped_by_id.values(), key=lambda item: item[0], reverse=True) if entry[0] >= min_score
-    ][:limit]
+    ranked = sorted(grouped_by_id.values(), key=lambda item: item[0], reverse=True)
+
+    # Collapse product-family duplicates: identical (artikelname, hersteller,
+    # DN, SN) in different stock lengths count as one suggestion. Keep the
+    # highest-scored variant and append a hint about the other lengths so the
+    # Mitarbeiter still knows the range exists. Without this, the carousel
+    # shows 3× the same pipe in 1m/3m/6m and crowds out real alternatives.
+    family_seen: dict[tuple, int] = {}
+    deduped: list = []
+    for entry in ranked:
+        if entry[0] < min_score:
+            continue
+        _, product, reasons, breakdown = entry
+        family_key = (
+            (product.artikelname or "").strip().lower(),
+            (product.hersteller or "").strip().lower(),
+            product.nennweite_dn,
+            (product.steifigkeitsklasse_sn or "").strip().lower(),
+        )
+        if family_key in family_seen:
+            idx = family_seen[family_key]
+            prev_score, prev_product, prev_reasons, prev_breakdown = deduped[idx]
+            length_m = product.laenge_mm / 1000 if product.laenge_mm else None
+            prev_length_m = prev_product.laenge_mm / 1000 if prev_product.laenge_mm else None
+            lengths = set()
+            for val in (length_m, prev_length_m):
+                if val is not None:
+                    lengths.add(f"{val:g} m")
+            hint = f"Auch in Längen: {', '.join(sorted(lengths))}" if lengths else "Mehrere Stangenlängen verfügbar"
+            existing_idx = next(
+                (i for i, r in enumerate(prev_reasons) if r.startswith("Auch in Längen") or r.startswith("Mehrere Stangenlängen")),
+                None,
+            )
+            if existing_idx is None:
+                # Prepend so it survives the most_common(N) reason cap below.
+                prev_reasons.insert(0, hint)
+            elif length_m is not None:
+                existing_lengths = {s.strip() for s in prev_reasons[existing_idx].replace("Auch in Längen:", "").split(",") if s.strip()}
+                existing_lengths.add(f"{length_m:g} m")
+                prev_reasons[existing_idx] = f"Auch in Längen: {', '.join(sorted(existing_lengths))}"
+            continue
+        family_seen[family_key] = len(deduped)
+        deduped.append(entry)
+
+    final_candidates = deduped[:limit]
 
     # Feature 6: Inject manual override suggestions
     override_suggestions: list[ProductSuggestion] = []
@@ -1698,7 +1773,7 @@ def suggest_products_for_position(
         total_price = round((unit_price or 0.0) * quantity, 2) if unit_price is not None else None
 
         reasons_counter = Counter(reasons)
-        deduped_reasons = [reason for reason, _count in reasons_counter.most_common(5)]
+        deduped_reasons = [reason for reason, _count in reasons_counter.most_common(7)]
 
         suggestion_warnings: list[str] = []
         if quantity_defaulted:

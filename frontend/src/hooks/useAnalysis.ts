@@ -1014,8 +1014,22 @@ export function useAnalysis() {
             if (!offerSugg) return
             const current = merged[entry.position_id]
             if (!current || !current.includes(offerSugg.artikel_id)) {
-              // Prepend the offer article, keep existing selections as additional
               merged[entry.position_id] = [offerSugg.artikel_id, ...(current ?? []).filter((id) => id !== offerSugg.artikel_id)]
+            }
+          })
+          // Drop stored selections that are no longer offered by the matcher — they
+          // went stale (scoring rule changed, product removed, etc). Fall back to
+          // the fresh top suggestion so the UI shows a valid proposal.
+          suggestionData.suggestions.forEach((entry) => {
+            const current = merged[entry.position_id]
+            if (!current || current.length === 0) return
+            const validIds = new Set(entry.suggestions.map((s) => s.artikel_id))
+            if (validIds.size === 0) return
+            const stillValid = current.filter((id) => validIds.has(id))
+            if (stillValid.length === 0) {
+              merged[entry.position_id] = freshDefaults[entry.position_id] ?? []
+            } else if (stillValid.length !== current.length) {
+              merged[entry.position_id] = stillValid
             }
           })
           return merged

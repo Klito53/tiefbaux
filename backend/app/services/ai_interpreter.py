@@ -266,6 +266,15 @@ COMPATIBLE_SYSTEM_KEYWORDS: list[tuple[re.Pattern[str], str]] = [
 
 SECONDARY_DN_SLASH_RE = re.compile(r"\bDN\s*(\d{2,4})\s*[/x]\s*(\d{2,4})\b", re.IGNORECASE)
 CONNECTION_DN_RE = re.compile(r"\banschlu(?:ss|ß)(?:\s*ein-/ausgang)?[:\s]*(\d{2,4})\s*(?:mm|dn)?\b", re.IGNORECASE)
+# "Anschluss ... an (vorh.) Kanal/Rohr/Leitung/Schacht ... DN 400" — the DN after
+# "an <target>" is the secondary (target) diameter, e.g. tapping a branch into an
+# existing main.
+CONNECTION_TO_DN_RE = re.compile(
+    r"\ban\s+(?:vorh\.?\s+|best[eh]+\.?\s+|bestehende[rn]?\s+)?"
+    r"(?:kanal|rohr|leitung|schacht|haupt|sammler)[^.\n]{0,80}?"
+    r"\bDN\s*(\d{2,4})\b",
+    re.IGNORECASE,
+)
 STRUCTURE_DN_RE = re.compile(r"\b(?:xs|sx)\s*(\d{3,4})\b|\((\d{3,4})\s*mm\)|\bDN\s*(\d{1,2}\.?\d{3})\b", re.IGNORECASE)
 # Prefer "Lichter Schachtdurchmesser" / "Schachtdurchmesser" for shaft DN
 _SHAFT_DN_RE = re.compile(r"(?:lichter?\s+)?schachtdurchmesser[:\s]*DN?\s*([0-9]{1,2}\.?[0-9]{3})", re.IGNORECASE)
@@ -382,6 +391,11 @@ def _infer_secondary_dn(text: str, category: str | None, subcategory: str | None
     connection_match = CONNECTION_DN_RE.search(text)
     if connection_match:
         return int(connection_match.group(1))
+
+    if is_connection_like:
+        to_match = CONNECTION_TO_DN_RE.search(text)
+        if to_match:
+            return int(to_match.group(1))
 
     return None
 
