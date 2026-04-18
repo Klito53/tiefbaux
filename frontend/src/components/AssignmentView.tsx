@@ -1372,7 +1372,11 @@ export function AssignmentView({
                   <path d="M8 11h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
               </div>
-              <p>Kein passender Artikel gefunden</p>
+              <p>
+                {currentPosition.parameters.sortiment_relevant === false
+                  ? 'Außerhalb Sortiment — keine Katalogzuordnung möglich'
+                  : 'Kein passender Artikel gefunden'}
+              </p>
               <div className="no-match-actions">
                 <button className="btn btn-ghost assignment-search-btn" onClick={() => setSearchOpen(true)}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">

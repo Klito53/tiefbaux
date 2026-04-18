@@ -820,12 +820,27 @@ def _has_hard_conflict(
         return True
 
     # ── SN under-spec hard conflict (safety-critical) ──
+    # Allow one SN tier below the spec (e.g. SN12 when SN16 requested) — the
+    # scoring layer penalises it clearly. Reject only if the product sits two
+    # or more tiers below the requirement.
     required_sn = position.parameters.stiffness_class_sn
     if required_sn is not None:
         sn_str = (product.steifigkeitsklasse_sn or "").strip()
         sn_match = re.search(r"(\d+)", sn_str)
-        if sn_match and int(sn_match.group(1)) < required_sn:
-            return True
+        if sn_match:
+            ladder = [2, 4, 8, 10, 12, 16]
+            product_sn = int(sn_match.group(1))
+            try:
+                req_idx = ladder.index(required_sn)
+                prod_idx = ladder.index(product_sn) if product_sn in ladder else -1
+            except ValueError:
+                req_idx = prod_idx = -1
+            if req_idx >= 0 and prod_idx >= 0:
+                if prod_idx < req_idx - 1:
+                    return True
+            elif product_sn < required_sn:
+                # Non-standard SN values fall back to strict under-spec reject.
+                return True
 
     # ── Load class under-spec hard conflict (safety-critical) ──
     required_load = position.parameters.load_class
@@ -1227,7 +1242,13 @@ def _sn_score(required_sn: int | None, product: Product) -> tuple[float, list[st
     if product_sn > required_sn:
         return 10.0, [f"SN{product_sn} über Anforderung (SN{required_sn})"]
 
-    # Product SN too low — hard penalty, safety-critical
+    # Product SN below spec. One tier below (e.g. SN12 vs SN16) is surfaced
+    # with a penalty so the user sees it flagged; more than one tier below is
+    # already hard-rejected by _has_hard_conflict.
+    ladder = [2, 4, 8, 10, 12, 16]
+    if required_sn in ladder and product_sn in ladder:
+        if ladder.index(required_sn) - ladder.index(product_sn) == 1:
+            return -12.0, [f"SN{product_sn} unter Anforderung (SN{required_sn} gefordert)"]
     return -30.0, [f"SN{product_sn} unter Anforderung (SN{required_sn})"]
 
 
