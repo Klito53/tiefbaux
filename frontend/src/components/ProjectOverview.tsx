@@ -231,100 +231,27 @@ export function ProjectOverview({
             </div>
           </div>
 
-          {/* Inquiries in left column for non-gerechnet */}
-          {!isGerechnet && inquiries.length > 0 && (
-            <div className="po-section">
-              <h3 className="po-section-title">
-                Anfragen
-                <span className="po-inquiry-count">{inquiries.length}</span>
-              </h3>
-              <div className="po-inquiry-list">
-                {openInquiries.map((inq) => (
-                  <div key={inq.id} className="po-inquiry-card po-inquiry-open">
-                    <div className="po-inquiry-supplier">{inq.supplier_name}</div>
-                    <div className="po-inquiry-product">{inq.product_description}</div>
-                  </div>
-                ))}
-                {sentInquiries.map((inq) => (
-                  <div key={inq.id} className={`po-inquiry-card po-inquiry-${inq.status}`}>
-                    <div className="po-inquiry-supplier">{inq.supplier_name}</div>
-                    <div className="po-inquiry-status-badge">
-                      {inq.status === 'angefragt' ? 'Angefragt' : 'Angebot erhalten'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Center/Right: Position table (non-gerechnet) or PDF + inquiries (gerechnet) */}
+        {/* Center: Position table (non-gerechnet) or PDF (gerechnet) */}
         {isGerechnet ? (
-          <>
-            <div className="project-overview-center">
-              <div className="po-pdf-header">
-                <h3 className="po-section-title">Angebot</h3>
+          <div className="project-overview-center">
+            <div className="po-pdf-header">
+              <h3 className="po-section-title">Angebot</h3>
+            </div>
+            {isInquiryPending ? (
+              <div className="po-section po-no-inquiries">
+                <p>Angebot gesperrt: offene Lieferantenanfragen.</p>
               </div>
-              {isInquiryPending ? (
-                <div className="po-section po-no-inquiries">
-                  <p>Angebot gesperrt: offene Lieferantenanfragen.</p>
-                </div>
-              ) : offerPdfUrl ? (
-                <iframe src={offerPdfUrl} className="po-pdf-viewer" title="Angebot PDF" />
-              ) : (
-                <div className="po-section po-no-inquiries">
-                  <p>Noch kein Angebot vorhanden.</p>
-                </div>
-              )}
-            </div>
-
-            <div className="project-overview-right">
-              {openInquiries.length > 0 && (
-                <div className="po-section">
-                  <h3 className="po-section-title">
-                    Offene Anfragen
-                    <span className="po-inquiry-count">{openInquiries.length}</span>
-                  </h3>
-                  <div className="po-inquiry-list">
-                    {openInquiries.map((inq) => (
-                      <div key={inq.id} className="po-inquiry-card po-inquiry-open">
-                        <div className="po-inquiry-supplier">{inq.supplier_name}</div>
-                        <div className="po-inquiry-product">{inq.product_description}</div>
-                        {inq.quantity && <div className="po-inquiry-qty">{inq.quantity} {inq.unit ?? 'Stk.'}</div>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {sentInquiries.length > 0 && (
-                <div className="po-section">
-                  <h3 className="po-section-title">
-                    Gesendete Anfragen
-                    <span className="po-inquiry-count">{sentInquiries.length}</span>
-                  </h3>
-                  <div className="po-inquiry-list">
-                    {sentInquiries.map((inq) => (
-                      <div key={inq.id} className={`po-inquiry-card po-inquiry-${inq.status}`}>
-                        <div className="po-inquiry-supplier">{inq.supplier_name}</div>
-                        <div className="po-inquiry-product">{inq.product_description}</div>
-                        <div className="po-inquiry-status-badge">
-                          {inq.status === 'angefragt' ? 'Angefragt' : 'Angebot erhalten'}
-                        </div>
-                        {inq.sent_at && <div className="po-inquiry-date">{new Date(inq.sent_at).toLocaleDateString('de-DE')}</div>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {inquiries.length === 0 && (
-                <div className="po-section po-no-inquiries">
-                  <p>Keine Lieferantenanfragen.</p>
-                </div>
-              )}
-            </div>
-          </>
+            ) : offerPdfUrl ? (
+              <iframe src={offerPdfUrl} className="po-pdf-viewer" title="Angebot PDF" />
+            ) : (
+              <div className="po-section po-no-inquiries">
+                <p>Noch kein Angebot vorhanden.</p>
+              </div>
+            )}
+          </div>
         ) : (
-          /* Non-gerechnet: position overview table spanning center + right */
           <div className="project-overview-positions">
             <div className="po-section">
               <h3 className="po-section-title">Positionsübersicht</h3>
@@ -414,6 +341,52 @@ export function ProjectOverview({
             </div>
           </div>
         )}
+
+        {/* Right column: Lieferantenanfragen — immer sichtbar */}
+        <div className="project-overview-right">
+          {openInquiries.length > 0 && (
+            <div className="po-section">
+              <h3 className="po-section-title">
+                Offene Anfragen
+                <span className="po-inquiry-count">{openInquiries.length}</span>
+              </h3>
+              <div className="po-inquiry-list">
+                {openInquiries.map((inq) => (
+                  <div key={inq.id} className="po-inquiry-card po-inquiry-open">
+                    <div className="po-inquiry-supplier">{inq.supplier_name}</div>
+                    <div className="po-inquiry-product">{inq.product_description}</div>
+                    {inq.quantity && <div className="po-inquiry-qty">{inq.quantity} {inq.unit ?? 'Stk.'}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {sentInquiries.length > 0 && (
+            <div className="po-section">
+              <h3 className="po-section-title">
+                Gesendete Anfragen
+                <span className="po-inquiry-count">{sentInquiries.length}</span>
+              </h3>
+              <div className="po-inquiry-list">
+                {sentInquiries.map((inq) => (
+                  <div key={inq.id} className={`po-inquiry-card po-inquiry-${inq.status}`}>
+                    <div className="po-inquiry-supplier">{inq.supplier_name}</div>
+                    <div className="po-inquiry-product">{inq.product_description}</div>
+                    <div className="po-inquiry-status-badge">
+                      {inq.status === 'angefragt' ? 'Angefragt' : 'Angebot erhalten'}
+                    </div>
+                    {inq.sent_at && <div className="po-inquiry-date">{new Date(inq.sent_at).toLocaleDateString('de-DE')}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {inquiries.length === 0 && (
+            <div className="po-section po-no-inquiries">
+              <p>Keine Lieferantenanfragen.</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Position summary table at bottom for gerechnet */}

@@ -634,6 +634,29 @@ export function useAnalysis() {
     showToast('Zusatzartikel hinzugefügt')
   }, [positions, pushUndo, showToast])
 
+  const handleToggleSuggestionAsExtra = useCallback((positionId: string, artikelId: string) => {
+    setSelectedArticleIds(current => {
+      const prev = current[positionId] ?? []
+      const isPrimary = prev[0] === artikelId
+      const isAdditional = prev.slice(1).includes(artikelId)
+      pushUndo({ type: 'select', positionId, previousArticleIds: prev })
+      if (isAdditional) {
+        const withoutArticle = prev.filter(id => id !== artikelId)
+        if (withoutArticle[0] === '') {
+          return { ...current, [positionId]: [artikelId, ...withoutArticle.slice(1)] }
+        }
+        return { ...current, [positionId]: withoutArticle }
+      }
+      if (isPrimary) {
+        const rest = prev.slice(1)
+        return { ...current, [positionId]: ['', ...rest, artikelId] }
+      }
+      const primary = prev[0] ?? ''
+      const rest = prev.slice(1)
+      return { ...current, [positionId]: [primary, ...rest, artikelId] }
+    })
+  }, [pushUndo])
+
   const handleRemoveArticle = useCallback((positionId: string, artikelId: string) => {
     setSelectedArticleIds(current => {
       const prev = current[positionId] ?? []
@@ -1363,6 +1386,7 @@ export function useAnalysis() {
     handleRejectSuggestion,
     handlePriceAdjustmentChange,
     handleAddArticle,
+    handleToggleSuggestionAsExtra,
     handleRemoveArticle,
     alternativeFlags,
     handleToggleAlternative,

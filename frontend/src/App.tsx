@@ -116,6 +116,7 @@ function AuthenticatedApp({ user, isAdmin, onLogout }: { user: User; isAdmin: bo
                 onReject={analysis.handleRejectSuggestion}
                 onManualSelect={analysis.handleManualSelect}
                 onAddArticle={analysis.handleAddArticle}
+                onToggleSuggestionAsExtra={analysis.handleToggleSuggestionAsExtra}
                 onRemoveArticle={analysis.handleRemoveArticle}
                 onPriceAdjustmentChange={analysis.handlePriceAdjustmentChange}
                 onFinish={analysis.handleExportPreview}

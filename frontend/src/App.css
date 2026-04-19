@@ -3957,6 +3957,11 @@ body {
   font-weight: 600;
 }
 
+.flag-toggle.flag-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .flag-toggle.flag-active.flag-warn {
   border-color: var(--warn);
   background: var(--warn-light, #fffbeb);
@@ -3985,6 +3990,17 @@ body {
 
 .flag-badge-blue {
   background: #3b82f6;
+  color: #fff;
+}
+
+.flag-toggle.flag-active.flag-green {
+  border-color: #10b981;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.flag-badge-green {
+  background: #10b981;
   color: #fff;
 }
 
@@ -6844,8 +6860,9 @@ body {
 
 /* ─── Project Overview: Position table for non-gerechnet ─── */
 .project-overview-positions {
-  grid-column: 2 / -1;
+  grid-column: 2;
   overflow-y: auto;
+  min-width: 0;
 }
 .project-overview-positions .po-section {
   height: 100%;

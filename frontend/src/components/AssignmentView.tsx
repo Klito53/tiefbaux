@@ -55,6 +55,27 @@ function shouldShowNormBadge(_position: LVPosition, suggestion: ProductSuggestio
   return true
 }
 
+function normBase(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[:+].*$/, '')
+    .replace(/-\d+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normsAreEquivalent(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false
+  const na = a.toLowerCase().trim()
+  const nb = b.toLowerCase().trim()
+  if (!na || !nb) return false
+  if (na === nb || na.includes(nb) || nb.includes(na)) return true
+  const ba = normBase(a)
+  const bb = normBase(b)
+  if (!ba || !bb) return false
+  return ba === bb || ba.includes(bb) || bb.includes(ba)
+}
+
 function filterSuggestionWarnings(warnings: string[]): string[] {
   return warnings.filter((warning) => {
     const lower = warning.toLowerCase()
@@ -186,6 +207,7 @@ type Props = {
   onReject: (positionId: string) => void
   onManualSelect: (positionId: string, product: ProductSearchResult) => void
   onAddArticle: (positionId: string, product: ProductSearchResult) => void
+  onToggleSuggestionAsExtra?: (positionId: string, artikelId: string) => void
   onRemoveArticle: (positionId: string, artikelId: string) => void
   onPriceAdjustmentChange: (assignmentKey: string, adjustment: PriceAdjustment) => void
   onFinish: () => void
@@ -219,6 +241,7 @@ export function AssignmentView({
   onReject,
   onManualSelect,
   onAddArticle,
+  onToggleSuggestionAsExtra,
   onRemoveArticle,
   onPriceAdjustmentChange,
   onFinish,
@@ -330,10 +353,12 @@ export function AssignmentView({
     () => mapOfferSuggestionSources(currentSuggestions, currentReceivedInquiries),
     [currentSuggestions, currentReceivedInquiries],
   )
-  // Carousel shows only matching suggestions, not manually added additional articles
+  // Carousel shows all matcher suggestions (even when toggled as Zusatzartikel)
+  // so the user can see their toggle state change in place. Manually added
+  // articles (via search) stay hidden from the carousel.
   const carouselSuggestions = useMemo(
     () => prioritizeOfferSuggestions(
-      currentSuggestions.filter((s) => !additionalArticleIds.has(s.artikel_id)),
+      currentSuggestions.filter((s) => !(additionalArticleIds.has(s.artikel_id) && s.is_manual)),
       offerSourcesByArtikelId,
     ),
     [currentSuggestions, additionalArticleIds, offerSourcesByArtikelId],
@@ -1267,13 +1292,13 @@ export function AssignmentView({
           {/* Unified suggestion carousel — all suggestions in one swipeable view */}
           {!isServiceView && carouselSuggestions.length > 0 && (
             <div className="assignment-carousel-unified">
-              {currentPrimaryAssignmentKey && currentSelectedArticle && pricingReferenceSuggestion && (
+              {pricingReferenceSuggestion && (
                 <PriceAdjustmentControl
                   adjustment={currentPriceAdjustment}
                   baseUnitPrice={pricingReferenceSuggestion.price_net}
                   quantity={currentPosition.quantity}
                   currency={pricingReferenceSuggestion.currency}
-                  onChange={(next) => onPriceAdjustmentChange(currentPrimaryAssignmentKey, next)}
+                  onChange={(next) => onPriceAdjustmentChange(primaryAssignmentKey(currentPosition.id), next)}
                 />
               )}
               <div className="carousel-header">
@@ -1323,32 +1348,49 @@ export function AssignmentView({
                   offerSourcesByArtikelId[currentCarouselSuggestion.artikel_id],
                 )}
               </div>
-              {currentPrimaryAssignmentKey && currentSelectedArticle && (
-                <div className="card-flags">
-                  {onToggleAlternative && (
-                    <label className={`flag-toggle ${alternativeFlags[currentPrimaryAssignmentKey] ? 'flag-active flag-warn' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={alternativeFlags[currentPrimaryAssignmentKey] ?? false}
-                        onChange={() => onToggleAlternative(currentPrimaryAssignmentKey)}
-                      />
-                      Alt. z. baus. Prüfung
-                      {alternativeFlags[currentPrimaryAssignmentKey] && <span className="flag-badge flag-badge-warn">ALT</span>}
-                    </label>
-                  )}
-                  {onToggleSupplierOpen && (
-                    <label className={`flag-toggle ${supplierOpenFlags[currentPrimaryAssignmentKey] ? 'flag-active flag-blue' : ''}`}>
-                      <input
-                        type="checkbox"
-                        checked={supplierOpenFlags[currentPrimaryAssignmentKey] ?? false}
-                        onChange={() => onToggleSupplierOpen(currentPrimaryAssignmentKey)}
-                      />
-                      Lieferant offen
-                      {supplierOpenFlags[currentPrimaryAssignmentKey] && <span className="flag-badge flag-badge-blue">OFFEN</span>}
-                    </label>
-                  )}
-                </div>
-              )}
+              {currentCarouselSuggestion && (() => {
+                const cardKey = additionalAssignmentKey(currentPosition.id, currentCarouselSuggestion.artikel_id)
+                const isExtra = currentSelectedArticles.slice(1).includes(currentCarouselSuggestion.artikel_id)
+                const altActive = alternativeFlags[cardKey] ?? false
+                const supplierActive = supplierOpenFlags[cardKey] ?? false
+                return (
+                  <div className="card-flags">
+                    {onToggleAlternative && (
+                      <label className={`flag-toggle ${altActive ? 'flag-active flag-warn' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={altActive}
+                          onChange={() => onToggleAlternative(cardKey)}
+                        />
+                        Alt. z. baus. Prüfung
+                        {altActive && <span className="flag-badge flag-badge-warn">ALT</span>}
+                      </label>
+                    )}
+                    {onToggleSupplierOpen && (
+                      <label className={`flag-toggle ${supplierActive ? 'flag-active flag-blue' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={supplierActive}
+                          onChange={() => onToggleSupplierOpen(cardKey)}
+                        />
+                        Lieferant offen
+                        {supplierActive && <span className="flag-badge flag-badge-blue">OFFEN</span>}
+                      </label>
+                    )}
+                    {onToggleSuggestionAsExtra && (
+                      <label className={`flag-toggle ${isExtra ? 'flag-active flag-green' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={isExtra}
+                          onChange={() => onToggleSuggestionAsExtra(currentPosition.id, currentCarouselSuggestion.artikel_id)}
+                        />
+                        Zusatzartikel
+                        {isExtra && <span className="flag-badge flag-badge-green">+</span>}
+                      </label>
+                    )}
+                  </div>
+                )
+              })()}
               {carouselSuggestions.length > 1 && (
                 <div className="carousel-dots">
                   {carouselSuggestions.map((_, i) => (
@@ -1410,11 +1452,11 @@ export function AssignmentView({
             </div>
           )}
 
-          {/* Additional articles section */}
+          {/* Additional articles section — only for manually added (via search), not for carousel-toggled Zusatzartikel */}
           {!isServiceView && currentSelectedArticles.length > 1 && (() => {
             const additionalArts = currentSelectedArticles.slice(1)
               .map(id => currentSuggestions.find(s => s.artikel_id === id))
-              .filter(Boolean) as ProductSuggestion[]
+              .filter((s): s is ProductSuggestion => Boolean(s) && Boolean(s?.is_manual))
             return additionalArts.length > 0 ? (
               <div className="additional-articles-section">
                 <div className="additional-articles-header">Zusatzartikel</div>
@@ -1636,7 +1678,6 @@ function renderSuggestionCard(
           {suggestion.is_override && <span className="override-badge">Häufig gewählt von Kollegen</span>}
           {suggestion.is_supplier_offer && <span className="offer-source-badge">Lieferantenangebot{suggestion.supplier_name ? ` · ${suggestion.supplier_name}` : ''}</span>}
           {!suggestion.is_supplier_offer && offerSourceSupplier && <span className="offer-source-badge">Aus Lieferantenangebot{offerSourceSupplier ? ` · ${offerSourceSupplier}` : ''}</span>}
-          {isTop && !suggestion.is_manual && !suggestion.is_override && !suggestion.is_supplier_offer && <span className="best-badge">Bester Treffer</span>}
           <strong className="suggestion-name">{suggestion.artikelname}</strong>
         </div>
         <div className="suggestion-header-actions">
@@ -1731,7 +1772,7 @@ function renderSuggestionCard(
           return <ParamBadge label={`${suggestion.angle_deg}°`} status={status} />
         })()}
         {shouldShowNormBadge(position, suggestion) && suggestion.norm && (
-          <span className={`param-badge param-${!position.parameters.norm ? 'neutral' : suggestion.norm.toLowerCase().includes(position.parameters.norm.toLowerCase()) ? 'match' : 'mismatch'}`}>
+          <span className={`param-badge param-${!position.parameters.norm ? 'neutral' : normsAreEquivalent(suggestion.norm, position.parameters.norm) ? 'match' : 'mismatch'}`}>
             <DinBadge norm={suggestion.norm} />
           </span>
         )}
@@ -1770,11 +1811,6 @@ function renderSuggestionCard(
             <span className="stock-needed"> (benötigt: {position.quantity})</span>
           )}
         </span>
-        {suggestion.delivery_days != null && (
-          <span className="delivery-badge">
-            {suggestion.delivery_days} Tage Lieferzeit
-          </span>
-        )}
         {onInquiry && (suggestion.stock == null || suggestion.stock <= 0 || (position.quantity != null && suggestion.stock < position.quantity)) && (
           <button className="btn-inquiry-inline" onClick={(e) => { e.stopPropagation(); onInquiry() }} title="Lieferantenanfrage stellen">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
